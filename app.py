@@ -350,6 +350,56 @@ def actualizar(id_, fecha, mes_presupuestal, persona, tipo, categoria, subcatego
     }).eq("id", id_).execute()
 
 
+# ── Items lista ───────────────────────────────────────────────────────────────
+
+def cargar_items(mes: date) -> pd.DataFrame:
+    inicio = date(mes.year, mes.month, 1).isoformat()
+    m_sig = mes.month % 12 + 1
+    y_sig = mes.year + (1 if mes.month == 12 else 0)
+    fin = date(y_sig, m_sig, 1).isoformat()
+    res = (
+        get_client()
+        .table("items_lista")
+        .select("*")
+        .gte("mes_presupuestal", inicio)
+        .lt("mes_presupuestal", fin)
+        .order("created_at", desc=False)
+        .execute()
+    )
+    cols = ["id", "mes_presupuestal", "nombre", "categoria", "subcategoria", "precio", "cantidad", "pagado"]
+    if not res.data:
+        df = pd.DataFrame(columns=cols)
+        df["total"] = pd.Series(dtype=float)
+        return df
+    df = pd.DataFrame(res.data)
+    df["precio"] = pd.to_numeric(df["precio"], errors="coerce").fillna(0)
+    df["cantidad"] = pd.to_numeric(df["cantidad"], errors="coerce").fillna(1).astype(int)
+    df["total"] = df["precio"] * df["cantidad"]
+    df["mes_presupuestal"] = pd.to_datetime(df["mes_presupuestal"]).dt.date
+    return df
+
+
+def guardar_item(mes_presupuestal, nombre, categoria, subcategoria, precio, cantidad):
+    get_client().table("items_lista").insert({
+        "mes_presupuestal": mes_presupuestal.isoformat(),
+        "nombre": nombre,
+        "categoria": categoria,
+        "subcategoria": subcategoria,
+        "precio": int(precio),
+        "cantidad": int(cantidad),
+        "pagado": False,
+    }).execute()
+
+
+def eliminar_item(id_: str):
+    get_client().table("items_lista").delete().eq("id", id_).execute()
+
+
+def pagar_item(id_: str, fecha, mes_presupuestal, persona, monto, categoria, subcategoria, descripcion):
+    guardar(fecha, mes_presupuestal, persona, "gasto", categoria, subcategoria, descripcion, monto)
+    get_client().table("items_lista").update({"pagado": True}).eq("id", id_).execute()
+
+
 # ─── PÁGINAS ──────────────────────────────────────────────────────────────────
 
 def pagina_dashboard(df: pd.DataFrame, mes: date):
@@ -720,6 +770,192 @@ def pagina_analisis(df: pd.DataFrame):
     st.dataframe(top5, use_container_width=True, hide_index=True)
 
 
+def pagina_lista(items_df: pd.DataFrame, mes: date):
+    st.subheader(f"🛒 Lista de Gastos — {MESES_ES[mes.month]} {mes.year}")
+
+    if "pagando_item" not in st.session_state:
+        st.session_state["pagando_item"] = None
+
+    # ── Resumen ───────────────────────────────────────────────────────────────
+    if not items_df.empty:
+        total_l = float(items_df["total"].sum())
+        pagado_l = float(items_df[items_df["pagado"] == True]["total"].sum())
+        pendiente_l = total_l - pagado_l
+        col1, col2, col3 = st.columns(3)
+        col1.metric("📋 Total lista", fmt(total_l))
+        col2.metric("✅ Pagado", fmt(pagado_l))
+        col3.metric("⏳ Por pagar", fmt(pendiente_l))
+        st.divider()
+
+    # ── Formulario agregar ítem ───────────────────────────────────────────────
+    hoy = date.today()
+    opciones_mes_l = []
+    for i in range(3):
+        m = hoy.month - i
+        y = hoy.year
+        while m <= 0:
+            m += 12
+            y -= 1
+        opciones_mes_l.append(date(y, m, 1))
+    default_mes_l = 1 if hoy.day <= 10 else 0
+
+    with st.expander("➕ Agregar ítem a la lista", expanded=items_df.empty):
+        cat_l = st.selectbox("Categoría", list(GASTOS.keys()), key="cat_lista_w")
+        subcats_l = list(GASTOS[cat_l].keys())
+
+        with st.form("form_item_lista", clear_on_submit=True):
+            nombre_l = st.text_input(
+                "Nombre del ítem",
+                placeholder="Ej: Queso, Pollo, Bombillo, Detergente...",
+            )
+            subcat_l = st.selectbox("Subcategoría", subcats_l)
+
+            col_p, col_q = st.columns([3, 2])
+            with col_p:
+                precio_l = st.number_input("Precio unitario ($)", min_value=0, step=500, format="%d")
+            with col_q:
+                cantidad_l = st.number_input("Cantidad", min_value=1, step=1, value=1)
+
+            mes_l_sel = st.selectbox(
+                "💼 ¿Con qué salario?",
+                range(len(opciones_mes_l)),
+                format_func=lambda i: f"Salario {MESES_ES[opciones_mes_l[i].month]} {opciones_mes_l[i].year}",
+                index=default_mes_l,
+            )
+            mes_pres_l = opciones_mes_l[mes_l_sel]
+
+            if precio_l > 0:
+                st.caption(f"Total: **{fmt(precio_l * cantidad_l)}**")
+
+            agregar_l = st.form_submit_button("➕ Agregar a lista", use_container_width=True, type="primary")
+            if agregar_l:
+                if not nombre_l.strip():
+                    st.error("Escribe el nombre del ítem.")
+                elif precio_l == 0:
+                    st.error("Ingresa el precio.")
+                else:
+                    guardar_item(mes_pres_l, nombre_l.strip(), cat_l, subcat_l, precio_l, cantidad_l)
+                    st.success(f"✅ **{nombre_l}** agregado — {fmt(precio_l * cantidad_l)}")
+                    st.rerun()
+
+    st.divider()
+
+    if items_df.empty:
+        st.info("📭 Agrega ítems para planificar tus gastos del período.")
+        return
+
+    # ── Ítems agrupados por categoría ─────────────────────────────────────────
+    grand_total = 0.0
+
+    for cat in items_df["categoria"].unique():
+        cat_items = items_df[items_df["categoria"] == cat]
+        presupuesto_cat = sum(GASTOS.get(cat, {}).values())
+        total_cat = float(cat_items["total"].sum())
+        grand_total += total_cat
+        pct = (total_cat / presupuesto_cat * 100) if presupuesto_cat > 0 else 0
+
+        badge = "🟢" if pct < 75 else ("🟡" if pct < 90 else ("🔴" if pct <= 100 else "🚨"))
+        col_ch, col_cs = st.columns([7, 3])
+        with col_ch:
+            st.markdown(f"**{badge} {cat}**")
+        with col_cs:
+            st.markdown(f"<div style='text-align:right'><small>{fmt(total_cat)} / {fmt(presupuesto_cat)}</small></div>",
+                        unsafe_allow_html=True)
+        if presupuesto_cat > 0:
+            st.progress(min(pct / 100, 1.0))
+
+        for _, item in cat_items.iterrows():
+            item_id = str(item["id"])
+            pagado = bool(item.get("pagado", False))
+            total_item = float(item["total"])
+            qty = int(item["cantidad"])
+
+            col_n, col_amt, col_pay, col_del = st.columns([5, 3, 2, 1])
+            with col_n:
+                nombre_md = f"~~{item['nombre']}~~" if pagado else f"**{item['nombre']}**"
+                qty_txt = f" ×{qty}" if qty > 1 else ""
+                st.markdown(f"{nombre_md}{qty_txt}")
+                st.caption(f"{item['subcategoria']} · {fmt(item['precio'])} c/u")
+            with col_amt:
+                t_md = f"~~{fmt(total_item)}~~" if pagado else fmt(total_item)
+                st.markdown(t_md)
+            with col_pay:
+                if pagado:
+                    st.markdown("✅")
+                else:
+                    if st.button("✓ Pagar", key=f"pay_{item_id}", use_container_width=True):
+                        st.session_state["pagando_item"] = (
+                            None if st.session_state["pagando_item"] == item_id else item_id
+                        )
+                        st.rerun()
+            with col_del:
+                if st.button("🗑️", key=f"del_item_{item_id}", help="Eliminar ítem"):
+                    eliminar_item(item_id)
+                    st.rerun()
+
+            # ── Mini formulario de pago ───────────────────────────────────────
+            if not pagado and st.session_state.get("pagando_item") == item_id:
+                with st.form(f"form_pagar_{item_id}"):
+                    st.markdown(f"**Registrar pago:** {item['nombre']} — {fmt(total_item)}")
+
+                    opciones_mes_p = []
+                    for i in range(3):
+                        m = hoy.month - i
+                        y = hoy.year
+                        while m <= 0:
+                            m += 12
+                            y -= 1
+                        opciones_mes_p.append(date(y, m, 1))
+
+                    item_mes = item.get("mes_presupuestal")
+                    if item_mes and hasattr(item_mes, "month"):
+                        default_p = next(
+                            (i for i, d in enumerate(opciones_mes_p)
+                             if d.month == item_mes.month and d.year == item_mes.year), 0
+                        )
+                    else:
+                        default_p = 1 if hoy.day <= 10 else 0
+
+                    col_pp1, col_pp2 = st.columns(2)
+                    with col_pp1:
+                        persona_p = st.selectbox("Quién pagó", PERSONAS)
+                    with col_pp2:
+                        fecha_p = st.date_input("Fecha", value=hoy)
+
+                    mes_p_idx = st.selectbox(
+                        "💼 ¿Con qué salario?",
+                        range(len(opciones_mes_p)),
+                        format_func=lambda i: f"Salario {MESES_ES[opciones_mes_p[i].month]} {opciones_mes_p[i].year}",
+                        index=default_p,
+                    )
+                    mes_pres_p = opciones_mes_p[mes_p_idx]
+
+                    col_ps, col_pc = st.columns(2)
+                    with col_ps:
+                        confirmar_p = st.form_submit_button("💾 Confirmar pago", use_container_width=True, type="primary")
+                    with col_pc:
+                        cancelar_p = st.form_submit_button("✖️ Cancelar", use_container_width=True)
+
+                    if confirmar_p:
+                        pagar_item(item_id, fecha_p, mes_pres_p, persona_p,
+                                   int(total_item), str(item["categoria"]),
+                                   str(item["subcategoria"]), str(item["nombre"]))
+                        st.session_state["pagando_item"] = None
+                        st.success(f"✅ {item['nombre']} registrado como gasto")
+                        st.rerun()
+                    if cancelar_p:
+                        st.session_state["pagando_item"] = None
+                        st.rerun()
+
+        st.divider()
+
+    st.markdown(
+        f"<div style='text-align:center; font-size:1.1rem; font-weight:700; padding:0.5rem 0;'>"
+        f"💰 Total lista: {fmt(grand_total)}</div>",
+        unsafe_allow_html=True,
+    )
+
+
 def pagina_pendientes(df: pd.DataFrame, mes: date):
     st.subheader(f"📝 Pendientes — Salario {MESES_ES[mes.month]} {mes.year}")
 
@@ -895,17 +1131,22 @@ def main():
     )
 
     df = cargar_mes(mes_sel)
+    items_df = cargar_items(mes_sel)
 
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Dashboard", "➕ Agregar", "📝 Pendientes", "📋 Historial", "📈 Análisis"])
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+        "📊 Inicio", "➕ Agregar", "🛒 Lista", "📝 Pendientes", "📋 Historial", "📈 Análisis"
+    ])
     with tab1:
         pagina_dashboard(df, mes_sel)
     with tab2:
         pagina_agregar()
     with tab3:
-        pagina_pendientes(df, mes_sel)
+        pagina_lista(items_df, mes_sel)
     with tab4:
-        pagina_historial(df)
+        pagina_pendientes(df, mes_sel)
     with tab5:
+        pagina_historial(df)
+    with tab6:
         pagina_analisis(df)
 
 
