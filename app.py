@@ -296,28 +296,31 @@ def mes_anterior(d: date) -> date:
 
 
 def cargar_mes(mes: date) -> pd.DataFrame:
-    inicio = date(mes.year, mes.month, 1).isoformat()
-    m_sig = mes.month % 12 + 1
-    y_sig = mes.year + (1 if mes.month == 12 else 0)
-    fin = date(y_sig, m_sig, 1).isoformat()
-
-    res = (
-        get_client()
-        .table("transacciones")
-        .select("*")
-        .gte("mes_presupuestal", inicio)
-        .lt("mes_presupuestal", fin)
-        .order("fecha", desc=True)
-        .execute()
-    )
     cols = ["id", "fecha", "mes_presupuestal", "persona", "tipo", "categoria", "subcategoria", "descripcion", "monto"]
-    if not res.data:
+    try:
+        inicio = date(mes.year, mes.month, 1).isoformat()
+        m_sig = mes.month % 12 + 1
+        y_sig = mes.year + (1 if mes.month == 12 else 0)
+        fin = date(y_sig, m_sig, 1).isoformat()
+        res = (
+            get_client()
+            .table("transacciones")
+            .select("*")
+            .gte("mes_presupuestal", inicio)
+            .lt("mes_presupuestal", fin)
+            .order("fecha", desc=True)
+            .execute()
+        )
+        if not res.data:
+            return pd.DataFrame(columns=cols)
+        df = pd.DataFrame(res.data)
+        df["fecha"] = pd.to_datetime(df["fecha"]).dt.date
+        df["mes_presupuestal"] = pd.to_datetime(df["mes_presupuestal"]).dt.date
+        df["monto"] = pd.to_numeric(df["monto"], errors="coerce").fillna(0)
+        return df
+    except Exception as e:
+        st.error(f"⚠️ Error cargando transacciones: `{e}`  \n\n**¿Corriste el SQL de configuración en Supabase?**")
         return pd.DataFrame(columns=cols)
-    df = pd.DataFrame(res.data)
-    df["fecha"] = pd.to_datetime(df["fecha"]).dt.date
-    df["mes_presupuestal"] = pd.to_datetime(df["mes_presupuestal"]).dt.date
-    df["monto"] = pd.to_numeric(df["monto"], errors="coerce").fillna(0)
-    return df
 
 
 def guardar(fecha, mes_presupuestal, persona, tipo, categoria, subcategoria, descripcion, monto):
@@ -353,30 +356,35 @@ def actualizar(id_, fecha, mes_presupuestal, persona, tipo, categoria, subcatego
 # ── Items lista ───────────────────────────────────────────────────────────────
 
 def cargar_items(mes: date) -> pd.DataFrame:
-    inicio = date(mes.year, mes.month, 1).isoformat()
-    m_sig = mes.month % 12 + 1
-    y_sig = mes.year + (1 if mes.month == 12 else 0)
-    fin = date(y_sig, m_sig, 1).isoformat()
-    res = (
-        get_client()
-        .table("items_lista")
-        .select("*")
-        .gte("mes_presupuestal", inicio)
-        .lt("mes_presupuestal", fin)
-        .order("created_at", desc=False)
-        .execute()
-    )
     cols = ["id", "mes_presupuestal", "nombre", "categoria", "subcategoria", "precio", "cantidad", "pagado"]
-    if not res.data:
+    try:
+        inicio = date(mes.year, mes.month, 1).isoformat()
+        m_sig = mes.month % 12 + 1
+        y_sig = mes.year + (1 if mes.month == 12 else 0)
+        fin = date(y_sig, m_sig, 1).isoformat()
+        res = (
+            get_client()
+            .table("items_lista")
+            .select("*")
+            .gte("mes_presupuestal", inicio)
+            .lt("mes_presupuestal", fin)
+            .order("created_at", desc=False)
+            .execute()
+        )
+        if not res.data:
+            df = pd.DataFrame(columns=cols)
+            df["total"] = pd.Series(dtype=float)
+            return df
+        df = pd.DataFrame(res.data)
+        df["precio"] = pd.to_numeric(df["precio"], errors="coerce").fillna(0)
+        df["cantidad"] = pd.to_numeric(df["cantidad"], errors="coerce").fillna(1).astype(int)
+        df["total"] = df["precio"] * df["cantidad"]
+        df["mes_presupuestal"] = pd.to_datetime(df["mes_presupuestal"]).dt.date
+        return df
+    except Exception:
         df = pd.DataFrame(columns=cols)
         df["total"] = pd.Series(dtype=float)
         return df
-    df = pd.DataFrame(res.data)
-    df["precio"] = pd.to_numeric(df["precio"], errors="coerce").fillna(0)
-    df["cantidad"] = pd.to_numeric(df["cantidad"], errors="coerce").fillna(1).astype(int)
-    df["total"] = df["precio"] * df["cantidad"]
-    df["mes_presupuestal"] = pd.to_datetime(df["mes_presupuestal"]).dt.date
-    return df
 
 
 def guardar_item(mes_presupuestal, nombre, categoria, subcategoria, precio, cantidad):
