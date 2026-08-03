@@ -597,6 +597,145 @@ def pagina_analisis(df: pd.DataFrame):
     st.dataframe(top5, use_container_width=True, hide_index=True)
 
 
+def pagina_pendientes(df: pd.DataFrame, mes: date):
+    st.subheader(f"📝 Pendientes — Salario {MESES_ES[mes.month]} {mes.year}")
+
+    if "registrando_item" not in st.session_state:
+        st.session_state["registrando_item"] = None
+
+    gastos_df = df[df["tipo"] == "gasto"] if not df.empty else pd.DataFrame()
+
+    # ── Resumen general ───────────────────────────────────────────────────────
+    total_items = sum(1 for cat in GASTOS.values() for k, v in cat.items() if v > 0 and k != "Otro")
+    pagados_n = 0
+    total_pendiente = 0
+
+    for cat, items in GASTOS.items():
+        for subcat, presupuesto in items.items():
+            if presupuesto == 0 or subcat == "Otro":
+                continue
+            if not gastos_df.empty:
+                match = gastos_df[(gastos_df["categoria"] == cat) & (gastos_df["subcategoria"] == subcat)]
+                if not match.empty:
+                    pagados_n += 1
+                    continue
+            total_pendiente += presupuesto
+
+    col_a, col_b, col_c = st.columns(3)
+    col_a.metric("✅ Pagados", f"{pagados_n} / {total_items}")
+    col_b.metric("⏳ Pendientes", f"{total_items - pagados_n} ítems")
+    col_c.metric("💸 Por pagar", fmt(total_pendiente))
+
+    progreso = pagados_n / total_items if total_items > 0 else 0
+    st.progress(progreso, text=f"{progreso*100:.0f}% del presupuesto fijo registrado")
+    st.divider()
+
+    # ── Checklist por categoría ───────────────────────────────────────────────
+    for cat, items in GASTOS.items():
+        items_fijos = {k: v for k, v in items.items() if v > 0 and k != "Otro"}
+        if not items_fijos:
+            continue
+
+        st.markdown(f"#### {cat}")
+
+        for subcat, presupuesto in items_fijos.items():
+            item_key = f"{cat}__{subcat}"
+
+            # Verificar si ya está pagado
+            pagado = False
+            monto_pagado = 0.0
+            fecha_pago = None
+            if not gastos_df.empty:
+                match = gastos_df[
+                    (gastos_df["categoria"] == cat) & (gastos_df["subcategoria"] == subcat)
+                ]
+                if not match.empty:
+                    pagado = True
+                    monto_pagado = float(match["monto"].sum())
+                    fecha_pago = match.iloc[0]["fecha"]
+
+            col_icon, col_info, col_monto, col_accion = st.columns([1, 5, 3, 2])
+
+            with col_icon:
+                st.markdown("✅" if pagado else "⏳")
+            with col_info:
+                if pagado:
+                    st.markdown(f"~~{subcat}~~")
+                    st.caption(f"Pagado el {fecha_pago}")
+                else:
+                    st.markdown(f"**{subcat}**")
+                    st.caption(fmt(presupuesto))
+            with col_monto:
+                if pagado:
+                    st.markdown(f"{fmt(monto_pagado)}")
+                    if abs(monto_pagado - presupuesto) > 1000:
+                        diff = monto_pagado - presupuesto
+                        st.caption(f"{'↑' if diff > 0 else '↓'} {fmt(abs(diff))} vs ppto")
+            with col_accion:
+                if not pagado:
+                    if st.button("➕ Pagar", key=f"btn_{item_key}", use_container_width=True):
+                        if st.session_state["registrando_item"] == item_key:
+                            st.session_state["registrando_item"] = None
+                        else:
+                            st.session_state["registrando_item"] = item_key
+                        st.rerun()
+
+            # ── Mini formulario de registro rápido ────────────────────────────
+            if st.session_state.get("registrando_item") == item_key:
+                with st.container():
+                    st.markdown("---")
+                    hoy = date.today()
+                    opciones_mes_r = []
+                    for i in range(3):
+                        m = hoy.month - i
+                        y = hoy.year
+                        while m <= 0:
+                            m += 12
+                            y -= 1
+                        opciones_mes_r.append(date(y, m, 1))
+                    default_mes_r = 1 if hoy.day <= 10 else 0
+
+                    with st.form(f"form_pend_{item_key}", clear_on_submit=True):
+                        st.markdown(f"**Registrar pago:** {subcat}")
+                        col_f1, col_f2 = st.columns(2)
+                        with col_f1:
+                            fecha_r = st.date_input("Fecha de pago", value=hoy)
+                        with col_f2:
+                            persona_r = st.selectbox("Quién", PERSONAS)
+
+                        mes_r_idx = st.selectbox(
+                            "💼 ¿Con qué salario?",
+                            range(len(opciones_mes_r)),
+                            format_func=lambda i: f"Salario {MESES_ES[opciones_mes_r[i].month]} {opciones_mes_r[i].year}",
+                            index=default_mes_r,
+                        )
+                        mes_presupuestal_r = opciones_mes_r[mes_r_idx]
+                        monto_r = st.number_input(
+                            "Monto ($COP)", min_value=1, step=1_000,
+                            format="%d", value=presupuesto,
+                        )
+                        desc_r = st.text_input("Descripción (opcional)")
+
+                        col_s, col_c2 = st.columns(2)
+                        with col_s:
+                            guardar_r = st.form_submit_button("💾 Guardar", use_container_width=True, type="primary")
+                        with col_c2:
+                            cancelar_r = st.form_submit_button("✖️ Cancelar", use_container_width=True)
+
+                        if guardar_r:
+                            guardar(fecha_r, mes_presupuestal_r, persona_r, "gasto",
+                                    cat, subcat, desc_r, monto_r)
+                            st.session_state["registrando_item"] = None
+                            st.success(f"✅ {subcat} registrado — {fmt(monto_r)}")
+                            st.rerun()
+                        if cancelar_r:
+                            st.session_state["registrando_item"] = None
+                            st.rerun()
+                    st.markdown("---")
+
+        st.divider()
+
+
 # ─── MAIN ─────────────────────────────────────────────────────────────────────
 
 def main():
@@ -619,14 +758,16 @@ def main():
 
     df = cargar_mes(mes_sel)
 
-    tab1, tab2, tab3, tab4 = st.tabs(["📊 Dashboard", "➕ Agregar", "📋 Historial", "📈 Análisis"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Dashboard", "➕ Agregar", "📝 Pendientes", "📋 Historial", "📈 Análisis"])
     with tab1:
         pagina_dashboard(df, mes_sel)
     with tab2:
         pagina_agregar()
     with tab3:
-        pagina_historial(df)
+        pagina_pendientes(df, mes_sel)
     with tab4:
+        pagina_historial(df)
+    with tab5:
         pagina_analisis(df)
 
 
