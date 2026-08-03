@@ -217,7 +217,11 @@ def eliminar(id_: str):
 # ─── PÁGINAS ──────────────────────────────────────────────────────────────────
 
 def pagina_dashboard(df: pd.DataFrame, mes: date):
-    st.subheader(f"📊 {MESES_ES[mes.month]} {mes.year}")
+    st.subheader(f"📊 Salario de {MESES_ES[mes.month]} {mes.year}")
+    st.caption(
+        f"Todo lo pagado con el salario de {MESES_ES[mes.month]}, "
+        "sin importar si el pago fue a finales de ese mes o primeros días del siguiente."
+    )
 
     gastos_reales = float(df[df["tipo"] == "gasto"]["monto"].sum()) if not df.empty else 0.0
     ingresos_reales = float(df[df["tipo"] == "ingreso"]["monto"].sum()) if not df.empty else 0.0
@@ -226,7 +230,7 @@ def pagina_dashboard(df: pd.DataFrame, mes: date):
     col1, col2, col3 = st.columns(3)
     col1.metric("💼 Ingresos previstos", fmt(TOTAL_INGRESOS_PREVISTOS))
     col2.metric(
-        "💸 Total gastado", fmt(gastos_reales),
+        "💸 Total pagado", fmt(gastos_reales),
         delta=f"{fmt(gastos_reales - TOTAL_GASTOS_PREVISTOS)} vs presupuesto",
         delta_color="inverse",
     )
@@ -237,7 +241,7 @@ def pagina_dashboard(df: pd.DataFrame, mes: date):
     elif saldo < 1_000_000:
         st.warning(f"⚠️ Saldo disponible bajo: **{fmt(saldo)}**")
     else:
-        st.success(f"✅ Tienes **{fmt(saldo)}** disponibles este mes")
+        st.success(f"✅ Te quedan **{fmt(saldo)}** del salario de {MESES_ES[mes.month]}")
 
     st.divider()
     st.markdown("#### Uso del presupuesto por categoría")
@@ -311,8 +315,15 @@ def pagina_agregar():
         categoria = fuente
         subcats = list(INGRESOS[fuente].keys())
 
-    # Selector de mes presupuestal — muestra mes actual y los 2 anteriores
     hoy = date.today()
+
+    # ── Selector de período salarial ──────────────────────────────────────────
+    st.info(
+        "💡 **¿Con qué salario se paga esto?**  \n"
+        "El salario de julio paga: servicios de julio + arriendo de agosto (primeros 5 días) "
+        "+ seguro de agosto (primeros 3 días). Todo eso se registra como **período Julio**."
+    )
+
     opciones_mes = []
     for i in range(3):
         m = hoy.month - i
@@ -324,22 +335,19 @@ def pagina_agregar():
 
     etiquetas_mes = []
     for i, d in enumerate(opciones_mes):
-        label = f"{MESES_ES[d.month]} {d.year}"
-        if i == 0:
-            label += " (mes actual)"
-        elif i == 1:
-            label += " (mes anterior)"
+        label = f"Salario de {MESES_ES[d.month]} {d.year}"
+        if i == 1:
+            label += " ← sugerido"
         etiquetas_mes.append(label)
 
-    # Si estamos en los primeros 7 días del mes, sugerimos el mes anterior por defecto
-    default_mes = 1 if hoy.day <= 7 else 0
+    # En los primeros 10 días del mes, el salario del mes anterior es el que está activo
+    default_mes = 1 if hoy.day <= 10 else 0
 
     idx_mes = st.selectbox(
-        "📅 ¿A qué mes corresponde este pago?",
+        "💼 ¿Con qué salario pagas esto?",
         range(len(etiquetas_mes)),
         format_func=lambda i: etiquetas_mes[i],
         index=default_mes,
-        help="Selecciona el mes al que pertenece este gasto, no necesariamente cuando lo pagaste.",
     )
     mes_presupuestal = opciones_mes[idx_mes]
 
