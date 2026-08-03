@@ -166,6 +166,12 @@ def fmt(v) -> str:
     return f"${v:,.0f}".replace(",", ".")
 
 
+def mes_anterior(d: date) -> date:
+    m = d.month - 1 or 12
+    y = d.year - (1 if d.month == 1 else 0)
+    return date(y, m, 1)
+
+
 def cargar_mes(mes: date) -> pd.DataFrame:
     inicio = date(mes.year, mes.month, 1).isoformat()
     m_sig = mes.month % 12 + 1
@@ -176,23 +182,25 @@ def cargar_mes(mes: date) -> pd.DataFrame:
         get_client()
         .table("transacciones")
         .select("*")
-        .gte("fecha", inicio)
-        .lt("fecha", fin)
+        .gte("mes_presupuestal", inicio)
+        .lt("mes_presupuestal", fin)
         .order("fecha", desc=True)
         .execute()
     )
-    cols = ["id", "fecha", "persona", "tipo", "categoria", "subcategoria", "descripcion", "monto"]
+    cols = ["id", "fecha", "mes_presupuestal", "persona", "tipo", "categoria", "subcategoria", "descripcion", "monto"]
     if not res.data:
         return pd.DataFrame(columns=cols)
     df = pd.DataFrame(res.data)
     df["fecha"] = pd.to_datetime(df["fecha"]).dt.date
+    df["mes_presupuestal"] = pd.to_datetime(df["mes_presupuestal"]).dt.date
     df["monto"] = pd.to_numeric(df["monto"], errors="coerce").fillna(0)
     return df
 
 
-def guardar(fecha, persona, tipo, categoria, subcategoria, descripcion, monto):
+def guardar(fecha, mes_presupuestal, persona, tipo, categoria, subcategoria, descripcion, monto):
     get_client().table("transacciones").insert({
         "fecha": fecha.isoformat(),
+        "mes_presupuestal": mes_presupuestal.isoformat(),
         "persona": persona,
         "tipo": tipo,
         "categoria": categoria,
@@ -303,9 +311,41 @@ def pagina_agregar():
         categoria = fuente
         subcats = list(INGRESOS[fuente].keys())
 
+    # Selector de mes presupuestal — muestra mes actual y los 2 anteriores
+    hoy = date.today()
+    opciones_mes = []
+    for i in range(3):
+        m = hoy.month - i
+        y = hoy.year
+        while m <= 0:
+            m += 12
+            y -= 1
+        opciones_mes.append(date(y, m, 1))
+
+    etiquetas_mes = []
+    for i, d in enumerate(opciones_mes):
+        label = f"{MESES_ES[d.month]} {d.year}"
+        if i == 0:
+            label += " (mes actual)"
+        elif i == 1:
+            label += " (mes anterior)"
+        etiquetas_mes.append(label)
+
+    # Si estamos en los primeros 7 días del mes, sugerimos el mes anterior por defecto
+    default_mes = 1 if hoy.day <= 7 else 0
+
+    idx_mes = st.selectbox(
+        "📅 ¿A qué mes corresponde este pago?",
+        range(len(etiquetas_mes)),
+        format_func=lambda i: etiquetas_mes[i],
+        index=default_mes,
+        help="Selecciona el mes al que pertenece este gasto, no necesariamente cuando lo pagaste.",
+    )
+    mes_presupuestal = opciones_mes[idx_mes]
+
     with st.form("form_tx", clear_on_submit=True):
         subcategoria = st.selectbox("Subcategoría / Concepto", subcats)
-        fecha = st.date_input("Fecha", value=date.today())
+        fecha = st.date_input("Fecha de pago", value=hoy)
         monto = st.number_input(
             "Monto ($COP)", min_value=1, step=1_000, format="%d",
             help="Valor en pesos colombianos",
@@ -316,9 +356,10 @@ def pagina_agregar():
         if enviado:
             try:
                 tipo_db = "gasto" if tipo == "Gasto" else "ingreso"
-                guardar(fecha, persona, tipo_db, categoria, subcategoria, descripcion, monto)
+                guardar(fecha, mes_presupuestal, persona, tipo_db, categoria, subcategoria, descripcion, monto)
+                mes_label = f"{MESES_ES[mes_presupuestal.month]} {mes_presupuestal.year}"
                 st.success(
-                    f"✅ **{fmt(monto)}** registrado en *{subcategoria}* ({categoria})"
+                    f"✅ **{fmt(monto)}** registrado en *{subcategoria}* → mes de **{mes_label}**"
                 )
                 st.balloons()
             except Exception as e:
@@ -358,11 +399,17 @@ def pagina_historial(df: pd.DataFrame):
         desc_extra = f" · {row['descripcion']}" if row.get("descripcion") else ""
         signo = "−" if es_gasto else "+"
 
+        # Mostrar aviso si la fecha de pago es de un mes diferente al mes presupuestal
+        mes_pres = row.get("mes_presupuestal")
+        pago_distinto = ""
+        if mes_pres and hasattr(mes_pres, "month") and mes_pres.month != row["fecha"].month:
+            pago_distinto = f" · <span style='color:#f0a500'>pagado el {row['fecha']}</span>"
+
         col_info, col_monto, col_del = st.columns([6, 3, 1])
         with col_info:
             st.markdown(
                 f"{emoji} **{row['subcategoria']}**  \n"
-                f"<small>{row['categoria']} · {row['persona']} · {row['fecha']}{desc_extra}</small>",
+                f"<small>{row['categoria']} · {row['persona']}{pago_distinto}{desc_extra}</small>",
                 unsafe_allow_html=True,
             )
         with col_monto:
