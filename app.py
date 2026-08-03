@@ -214,6 +214,19 @@ def eliminar(id_: str):
     get_client().table("transacciones").delete().eq("id", id_).execute()
 
 
+def actualizar(id_, fecha, mes_presupuestal, persona, tipo, categoria, subcategoria, descripcion, monto):
+    get_client().table("transacciones").update({
+        "fecha": fecha.isoformat(),
+        "mes_presupuestal": mes_presupuestal.isoformat(),
+        "persona": persona,
+        "tipo": tipo,
+        "categoria": categoria,
+        "subcategoria": subcategoria,
+        "descripcion": descripcion or "",
+        "monto": int(monto),
+    }).eq("id", id_).execute()
+
+
 # ─── PÁGINAS ──────────────────────────────────────────────────────────────────
 
 def pagina_dashboard(df: pd.DataFrame, mes: date):
@@ -377,6 +390,9 @@ def pagina_agregar():
 def pagina_historial(df: pd.DataFrame):
     st.subheader("📋 Historial")
 
+    if "editando_id" not in st.session_state:
+        st.session_state["editando_id"] = None
+
     if df.empty:
         st.info("📭 No hay transacciones registradas este mes.")
         return
@@ -402,18 +418,18 @@ def pagina_historial(df: pd.DataFrame):
     st.divider()
 
     for _, row in filtrado.iterrows():
+        row_id = str(row["id"])
         es_gasto = row["tipo"] == "gasto"
         emoji = "💸" if es_gasto else "💰"
         desc_extra = f" · {row['descripcion']}" if row.get("descripcion") else ""
         signo = "−" if es_gasto else "+"
 
-        # Mostrar aviso si la fecha de pago es de un mes diferente al mes presupuestal
         mes_pres = row.get("mes_presupuestal")
         pago_distinto = ""
         if mes_pres and hasattr(mes_pres, "month") and mes_pres.month != row["fecha"].month:
             pago_distinto = f" · <span style='color:#f0a500'>pagado el {row['fecha']}</span>"
 
-        col_info, col_monto, col_del = st.columns([6, 3, 1])
+        col_info, col_monto, col_edit, col_del = st.columns([5, 3, 1, 1])
         with col_info:
             st.markdown(
                 f"{emoji} **{row['subcategoria']}**  \n"
@@ -422,10 +438,96 @@ def pagina_historial(df: pd.DataFrame):
             )
         with col_monto:
             st.markdown(f"**{signo}{fmt(row['monto'])}**")
-        with col_del:
-            if st.button("🗑️", key=f"del_{row['id']}", help="Eliminar"):
-                eliminar(str(row["id"]))
+        with col_edit:
+            if st.button("✏️", key=f"edit_{row_id}", help="Editar"):
+                st.session_state["editando_id"] = row_id
                 st.rerun()
+        with col_del:
+            if st.button("🗑️", key=f"del_{row_id}", help="Eliminar"):
+                eliminar(row_id)
+                st.rerun()
+
+        # ── Formulario de edición inline ─────────────────────────────────────
+        if st.session_state["editando_id"] == row_id:
+            with st.expander("✏️ Editar transacción", expanded=True):
+                tipo_actual = "Gasto" if row["tipo"] == "gasto" else "Ingreso"
+                col_e1, col_e2 = st.columns(2)
+                with col_e1:
+                    tipo_ed = st.selectbox(
+                        "Tipo", ["Gasto", "Ingreso"],
+                        index=["Gasto", "Ingreso"].index(tipo_actual),
+                        key=f"et_{row_id}",
+                    )
+                with col_e2:
+                    per_idx = PERSONAS.index(row["persona"]) if row["persona"] in PERSONAS else 0
+                    persona_ed = st.selectbox("Quién", PERSONAS, index=per_idx, key=f"ep_{row_id}")
+
+                if tipo_ed == "Gasto":
+                    cats_ed = list(GASTOS.keys())
+                    cat_idx = cats_ed.index(row["categoria"]) if row["categoria"] in cats_ed else 0
+                    cat_ed = st.selectbox("Categoría", cats_ed, index=cat_idx, key=f"ec_{row_id}")
+                    subcats_ed = list(GASTOS[cat_ed].keys())
+                else:
+                    cats_ed = list(INGRESOS.keys())
+                    cat_idx = cats_ed.index(row["categoria"]) if row["categoria"] in cats_ed else 0
+                    cat_ed = st.selectbox("Fuente", cats_ed, index=cat_idx, key=f"ec_{row_id}")
+                    subcats_ed = list(INGRESOS[cat_ed].keys())
+
+                # Opciones de mes presupuestal (últimos 6 meses)
+                hoy = date.today()
+                opciones_mes_ed = []
+                for i in range(6):
+                    m = hoy.month - i
+                    y = hoy.year
+                    while m <= 0:
+                        m += 12
+                        y -= 1
+                    opciones_mes_ed.append(date(y, m, 1))
+
+                mes_pres_row = row.get("mes_presupuestal")
+                if mes_pres_row and hasattr(mes_pres_row, "month"):
+                    mes_pres_first = date(mes_pres_row.year, mes_pres_row.month, 1)
+                    mes_ed_idx = next((i for i, d in enumerate(opciones_mes_ed) if d == mes_pres_first), 0)
+                else:
+                    mes_ed_idx = 0
+
+                with st.form(f"form_edit_{row_id}"):
+                    sub_idx = subcats_ed.index(row["subcategoria"]) if row["subcategoria"] in subcats_ed else 0
+                    subcat_ed = st.selectbox("Subcategoría / Concepto", subcats_ed, index=sub_idx)
+
+                    mes_ed = st.selectbox(
+                        "💼 ¿Con qué salario?",
+                        range(len(opciones_mes_ed)),
+                        format_func=lambda i: f"Salario de {MESES_ES[opciones_mes_ed[i].month]} {opciones_mes_ed[i].year}",
+                        index=mes_ed_idx,
+                    )
+                    mes_presupuestal_ed = opciones_mes_ed[mes_ed]
+
+                    fecha_ed = st.date_input("Fecha de pago", value=row["fecha"])
+                    monto_ed = st.number_input(
+                        "Monto ($COP)", min_value=1, step=1_000,
+                        format="%d", value=int(row["monto"]),
+                    )
+                    desc_ed = st.text_input("Descripción", value=row.get("descripcion") or "")
+
+                    col_s, col_c = st.columns(2)
+                    with col_s:
+                        guardar_ed = st.form_submit_button("💾 Guardar cambios", use_container_width=True, type="primary")
+                    with col_c:
+                        cancelar_ed = st.form_submit_button("✖️ Cancelar", use_container_width=True)
+
+                    if guardar_ed:
+                        tipo_db_ed = "gasto" if tipo_ed == "Gasto" else "ingreso"
+                        actualizar(row_id, fecha_ed, mes_presupuestal_ed, persona_ed,
+                                   tipo_db_ed, cat_ed, subcat_ed, desc_ed, monto_ed)
+                        st.session_state["editando_id"] = None
+                        st.success("✅ Cambios guardados")
+                        st.rerun()
+
+                    if cancelar_ed:
+                        st.session_state["editando_id"] = None
+                        st.rerun()
+
         st.divider()
 
     neto = t_ingresos - t_gastos
