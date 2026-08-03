@@ -19,15 +19,138 @@ st.set_page_config(
 
 st.markdown("""
 <style>
-    .block-container { padding: 1rem 0.75rem 3rem; max-width: 720px; }
-    .stTabs [data-baseweb="tab"] { font-size: 13px; padding: 6px 10px; }
-    div[data-testid="metric-container"] {
-        background: #f8f9fa;
-        border: 1px solid #e9ecef;
-        border-radius: 10px;
-        padding: 12px 8px;
-    }
-    .stButton > button { border-radius: 8px; }
+/* ── Layout ──────────────────────────────────────────────── */
+.block-container {
+    padding: 0rem 1rem 5rem;
+    max-width: 680px;
+}
+
+/* ── Header centrado ─────────────────────────────────────── */
+.app-header {
+    text-align: center;
+    padding: 1.8rem 0 0.4rem;
+}
+.app-header h1 {
+    font-size: 1.9rem;
+    font-weight: 800;
+    letter-spacing: -0.5px;
+    background: linear-gradient(135deg, #a78bfa, #7c3aed);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    margin: 0.3rem 0 0.1rem;
+}
+.app-header p {
+    font-size: 0.82rem;
+    opacity: 0.5;
+    margin: 0;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+}
+
+/* ── Tabs ────────────────────────────────────────────────── */
+.stTabs [data-baseweb="tab-list"] {
+    gap: 3px;
+    background: rgba(255,255,255,0.04);
+    border-radius: 14px;
+    padding: 4px;
+    border: 1px solid rgba(255,255,255,0.07);
+}
+.stTabs [data-baseweb="tab"] {
+    font-size: 12px;
+    font-weight: 600;
+    padding: 7px 8px;
+    border-radius: 10px;
+    color: rgba(255,255,255,0.55);
+    border: none !important;
+    background: transparent !important;
+}
+.stTabs [aria-selected="true"] {
+    background: #7c3aed !important;
+    color: white !important;
+}
+
+/* ── Tarjetas métricas ───────────────────────────────────── */
+div[data-testid="metric-container"] {
+    background: rgba(124,58,237,0.1);
+    border: 1px solid rgba(124,58,237,0.25);
+    border-radius: 16px;
+    padding: 14px 12px;
+}
+div[data-testid="metric-container"] label {
+    font-size: 0.72rem !important;
+    font-weight: 600;
+    letter-spacing: 0.4px;
+    text-transform: uppercase;
+    opacity: 0.65;
+}
+div[data-testid="metric-container"] [data-testid="stMetricValue"] {
+    font-size: 1.25rem !important;
+    font-weight: 700;
+}
+
+/* ── Botones ─────────────────────────────────────────────── */
+.stButton > button {
+    border-radius: 10px;
+    font-weight: 600;
+    font-size: 14px;
+    border: 1px solid rgba(255,255,255,0.12);
+    transition: all 0.15s ease;
+}
+.stButton > button:hover {
+    border-color: #7c3aed;
+    color: #a78bfa;
+}
+.stButton > button[kind="primary"] {
+    background: linear-gradient(135deg, #7c3aed, #5b21b6) !important;
+    border: none !important;
+    color: white !important;
+}
+.stButton > button[kind="primary"]:hover {
+    background: linear-gradient(135deg, #8b5cf6, #6d28d9) !important;
+    color: white !important;
+}
+
+/* ── Barra de progreso ───────────────────────────────────── */
+.stProgress > div > div > div {
+    background: linear-gradient(90deg, #7c3aed, #a78bfa);
+    border-radius: 99px;
+}
+.stProgress > div > div {
+    background: rgba(255,255,255,0.07);
+    border-radius: 99px;
+}
+
+/* ── Inputs ──────────────────────────────────────────────── */
+div[data-baseweb="select"] > div,
+div[data-baseweb="input"] > div {
+    border-radius: 10px !important;
+    border-color: rgba(255,255,255,0.12) !important;
+    background: rgba(255,255,255,0.04) !important;
+}
+
+/* ── Divisores ───────────────────────────────────────────── */
+hr { opacity: 0.1; margin: 0.5rem 0; }
+
+/* ── Info / alertas ──────────────────────────────────────── */
+div[data-testid="stAlert"] {
+    border-radius: 12px;
+    border-left-width: 3px;
+}
+
+/* ── Expander ────────────────────────────────────────────── */
+details summary {
+    border-radius: 10px;
+    font-weight: 600;
+}
+
+/* ── Selector de mes ─────────────────────────────────────── */
+div[data-testid="stSelectbox"] label {
+    font-size: 0.75rem;
+    font-weight: 600;
+    opacity: 0.6;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -739,22 +862,37 @@ def pagina_pendientes(df: pd.DataFrame, mes: date):
 # ─── MAIN ─────────────────────────────────────────────────────────────────────
 
 def main():
-    col_titulo, col_mes = st.columns([3, 2])
-    with col_titulo:
-        st.markdown("## 💰 Cuentas Jessi & Juanse")
-    with col_mes:
-        hoy = date.today()
-        opciones = []
-        for i in range(7):
-            m = hoy.month - i
-            y = hoy.year
-            while m <= 0:
-                m += 12
-                y -= 1
-            opciones.append(date(y, m, 1))
-        etiquetas = [f"{MESES_ES[d.month]} {d.year}" for d in opciones]
-        idx = st.selectbox("📅 Mes", range(len(etiquetas)), format_func=lambda i: etiquetas[i])
-        mes_sel = opciones[idx]
+    # ── Header centrado ───────────────────────────────────────────────────────
+    st.markdown("""
+    <div class="app-header">
+        <div style="font-size:2.4rem; line-height:1;">💰</div>
+        <h1>Cuentas Jessi & Juanse</h1>
+        <p>Control financiero familiar</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ── Selector de mes centrado ──────────────────────────────────────────────
+    hoy = date.today()
+    opciones = []
+    for i in range(7):
+        m = hoy.month - i
+        y = hoy.year
+        while m <= 0:
+            m += 12
+            y -= 1
+        opciones.append(date(y, m, 1))
+    etiquetas = [f"{MESES_ES[d.month]} {d.year}" for d in opciones]
+
+    col_l, col_mid, col_r = st.columns([1, 3, 1])
+    with col_mid:
+        idx = st.selectbox("📅 Período", range(len(etiquetas)), format_func=lambda i: etiquetas[i], label_visibility="collapsed")
+    mes_sel = opciones[idx]
+
+    st.markdown(
+        f"<p style='text-align:center; font-size:0.78rem; opacity:0.45; margin-top:-0.5rem;'>"
+        f"Salario de {MESES_ES[mes_sel.month]} {mes_sel.year}</p>",
+        unsafe_allow_html=True,
+    )
 
     df = cargar_mes(mes_sel)
 
