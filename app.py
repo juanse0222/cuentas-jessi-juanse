@@ -1108,18 +1108,47 @@ def pagina_pendientes(df: pd.DataFrame, mes: date):
 def pagina_importar():
     st.subheader("📥 Importar extractos BBVA")
     st.caption(
-        "Sube el Excel de movimientos o los PDF de extracto de cuenta de la app BBVA. "
+        "Sube el Excel de movimientos, los PDF de extracto de cuenta, o busca directo en tu correo. "
         "Nada se guarda hasta que revises y confirmes abajo."
     )
+
+    if "correo_df" not in st.session_state:
+        st.session_state["correo_df"] = None
+
+    # ── Buscar en correo (IMAP) ─────────────────────────────────────────────
+    usuario_correo = st.secrets.get("GMAIL_JUANSE_USER")
+    clave_correo = st.secrets.get("GMAIL_JUANSE_APP_PASSWORD")
+
+    with st.expander("📬 Buscar en mi correo (Juanse)", expanded=False):
+        if not (usuario_correo and clave_correo):
+            st.info(
+                "No configurado todavía. Agrega `GMAIL_JUANSE_USER` y "
+                "`GMAIL_JUANSE_APP_PASSWORD` en `.streamlit/secrets.toml`."
+            )
+        else:
+            dias = st.slider("Buscar correos de los últimos N días", 1, 90, 30)
+            if st.button("🔍 Buscar notificaciones BBVA", use_container_width=True):
+                with st.spinner("Conectando a Gmail…"):
+                    try:
+                        df_correo = importador.buscar_correos_bbva(usuario_correo, clave_correo, dias)
+                        st.session_state["correo_df"] = df_correo
+                        total = df_correo.attrs.get("total_mensajes", 0)
+                        no_rec = df_correo.attrs.get("no_reconocidos", 0)
+                        st.success(
+                            f"✅ {total} correos de BBVA encontrados · "
+                            f"{len(df_correo)} reconocidos · {no_rec} con formato no soportado aún"
+                        )
+                    except Exception as e:
+                        st.error(f"❌ No pude conectar al correo: {e}")
 
     archivos = st.file_uploader(
         "Archivos (.xlsx o .pdf)", type=["xlsx", "pdf"], accept_multiple_files=True,
     )
-    if not archivos:
-        return
 
     partes = []
-    for f in archivos:
+    if st.session_state["correo_df"] is not None and not st.session_state["correo_df"].empty:
+        partes.append(st.session_state["correo_df"])
+    for f in archivos or []:
         try:
             partes.append(importador.parsear_archivo(f))
         except Exception as e:

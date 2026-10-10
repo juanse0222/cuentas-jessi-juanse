@@ -5,8 +5,11 @@ un formato normalizado listo para revisar e importar como transacciones.
 
 from __future__ import annotations
 
+import html
+import imaplib
+import email
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pandas as pd
 import pdfplumber
@@ -268,3 +271,85 @@ def parsear_archivo(file) -> pd.DataFrame:
         file.seek(0)
         return parsear_pdf(file)
     raise ValueError(f"Formato no soportado: {file.name}")
+
+
+# ─── Conexión IMAP (lectura de notificaciones BBVA directo del correo) ───────
+
+REMITENTE_BBVA = "BBVA@bbvanet.com.co"
+
+# Asuntos de correo BBVA que sabemos parsear hoy. BBVA envía muchos otros
+# tipos (alertas de inicio de sesión, confirmaciones de ingreso digital, etc.)
+# que no son transacciones — filtrarlos aquí evita descargar esos cuerpos.
+ASUNTOS_SOPORTADOS = ["Compra Exitosa"]
+
+
+def _criterio_asuntos(asuntos: list[str]) -> str:
+    terminos = [f'SUBJECT "{a}"' for a in asuntos]
+    criterio = terminos[-1]
+    for t in reversed(terminos[:-1]):
+        criterio = f"OR {t} {criterio}"
+    return criterio
+
+
+def _cuerpo_texto(msg: email.message.Message) -> str:
+    """Extrae la parte text/plain de un correo; si no existe, limpia el HTML a mano."""
+    if msg.is_multipart():
+        texto_html = None
+        for parte in msg.walk():
+            tipo = parte.get_content_type()
+            if parte.get_content_disposition() == "attachment":
+                continue
+            if tipo == "text/plain":
+                charset = parte.get_content_charset() or "utf-8"
+                return html.unescape(parte.get_payload(decode=True).decode(charset, errors="replace"))
+            if tipo == "text/html" and texto_html is None:
+                charset = parte.get_content_charset() or "utf-8"
+                texto_html = parte.get_payload(decode=True).decode(charset, errors="replace")
+        if texto_html:
+            return html.unescape(re.sub(r"<[^>]+>", " ", texto_html))
+        return ""
+    charset = msg.get_content_charset() or "utf-8"
+    payload = msg.get_payload(decode=True)
+    return html.unescape(payload.decode(charset, errors="replace")) if payload else ""
+
+
+def buscar_correos_bbva(usuario: str, app_password: str, dias: int = 30) -> pd.DataFrame:
+    """
+    Se conecta por IMAP a Gmail con una contraseña de aplicación, busca
+    notificaciones BBVA de los últimos `dias` días y devuelve las que se
+    puedan parsear (hoy: solo 'Compra Exitosa') en el mismo formato
+    normalizado que parsear_archivo().
+    """
+    desde = (datetime.now() - timedelta(days=dias)).strftime("%d-%b-%Y")
+
+    imap = imaplib.IMAP4_SSL("imap.gmail.com")
+    try:
+        imap.login(usuario, app_password)
+        imap.select("INBOX", readonly=True)
+        criterio_asunto = _criterio_asuntos(ASUNTOS_SOPORTADOS)
+        _, datos = imap.search(
+            None, f'(FROM "{REMITENTE_BBVA}" SINCE "{desde}" {criterio_asunto})'
+        )
+        ids = datos[0].split()
+
+        partes = []
+        no_reconocidos = 0
+        for msg_id in ids:
+            _, msg_datos = imap.fetch(msg_id, "(RFC822)")
+            raw = msg_datos[0][1]
+            msg = email.message_from_bytes(raw)
+            texto = _cuerpo_texto(msg)
+            if _es_email_bbva(texto):
+                partes.append(parsear_email_texto(texto))
+            else:
+                no_reconocidos += 1
+
+        df = pd.concat(partes, ignore_index=True) if partes else pd.DataFrame()
+        df.attrs["no_reconocidos"] = no_reconocidos
+        df.attrs["total_mensajes"] = len(ids)
+        return df
+    finally:
+        try:
+            imap.logout()
+        except Exception:
+            pass
