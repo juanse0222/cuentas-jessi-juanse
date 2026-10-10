@@ -1,4 +1,6 @@
 .streamlit/secrets.toml
+.streamlit/secrets.toml.save
+*.save
 __pycache__/
 *.pyc
 .DS_Store
