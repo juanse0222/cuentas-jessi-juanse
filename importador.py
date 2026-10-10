@@ -206,10 +206,65 @@ def parsear_pdf(file) -> pd.DataFrame:
     return pd.DataFrame(filas)
 
 
+_EMAIL_FECHA = re.compile(r"Fecha de la operaci[oó]n:\s*(\d{4}-\d{2}-\d{2})")
+_EMAIL_ESTAB = re.compile(r"Establecimiento:\s*(.+)")
+_EMAIL_VALOR = re.compile(r"Valor:\s*\$?\s*([\d,]+\.\d{2})")
+_EMAIL_TARJETA = re.compile(r"Tarjeta terminada en:\s*(\*?\d+)")
+_EMAIL_REF = re.compile(r"Ref:\s*(\d+)")
+
+
+def parsear_email_texto(texto: str) -> pd.DataFrame:
+    """Parsea el texto de una notificación BBVA de 'Compra Exitosa' (correo o PDF impreso del correo)."""
+    filas = []
+    # Permite varios correos concatenados en un mismo texto/archivo.
+    # Se parte por "Ref:" (antes de los demás campos en el cuerpo del correo)
+    # para que Tarjeta/Ref queden en el mismo bloque que su Fecha/Establecimiento/Valor.
+    bloques = re.split(r"(?=Ref:\d)", texto)
+    for bloque in bloques:
+        m_fecha = _EMAIL_FECHA.search(bloque)
+        m_estab = _EMAIL_ESTAB.search(bloque)
+        m_valor = _EMAIL_VALOR.search(bloque)
+        if not (m_fecha and m_estab and m_valor):
+            continue
+
+        fecha = datetime.strptime(m_fecha.group(1), "%Y-%m-%d").date()
+        establecimiento = m_estab.group(1).strip()
+        monto = float(m_valor.group(1).replace(",", ""))
+        m_tarjeta = _EMAIL_TARJETA.search(bloque)
+        m_ref = _EMAIL_REF.search(bloque)
+
+        descripcion = f"COMPRA EN {establecimiento}"
+        categoria, subcategoria = sugerir_categoria(descripcion, "gasto")
+        filas.append({
+            "fecha": fecha,
+            "descripcion": descripcion,
+            "monto": monto,
+            "tipo": "gasto",
+            "categoria_sugerida": categoria,
+            "subcategoria_sugerida": subcategoria,
+            "origen": "Email",
+            "tarjeta": m_tarjeta.group(1) if m_tarjeta else None,
+            "ref": m_ref.group(1) if m_ref else None,
+        })
+    return pd.DataFrame(filas)
+
+
+def _es_email_bbva(texto: str) -> bool:
+    return "Establecimiento:" in texto and "Fecha de la operaci" in texto
+
+
 def parsear_archivo(file) -> pd.DataFrame:
     nombre = file.name.lower()
     if nombre.endswith(".xlsx") or nombre.endswith(".xls"):
         return parsear_excel(file)
     if nombre.endswith(".pdf"):
+        with pdfplumber.open(file) as pdf:
+            texto_p1 = pdf.pages[0].extract_text() or ""
+        if _es_email_bbva(texto_p1):
+            file.seek(0)
+            with pdfplumber.open(file) as pdf:
+                texto_completo = "\n".join(p.extract_text() or "" for p in pdf.pages)
+            return parsear_email_texto(texto_completo)
+        file.seek(0)
         return parsear_pdf(file)
     raise ValueError(f"Formato no soportado: {file.name}")

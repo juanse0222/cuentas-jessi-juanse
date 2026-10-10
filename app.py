@@ -1141,15 +1141,17 @@ def pagina_importar():
             .lte("fecha", fecha_max.isoformat())
             .execute()
         )
+        # La misma compra real se ve distinto en cada fuente (Excel, PDF, correo),
+        # así que el cruce se hace por fecha + monto, no por el texto exacto.
         ya_existe = {
-            (row["fecha"], row["descripcion"], round(float(row["monto"])))
+            (row["fecha"], round(float(row["monto"])))
             for row in existentes.data
         }
     except Exception:
         ya_existe = set()
 
     def es_duplicado(row):
-        return (row["fecha"].isoformat(), row["descripcion"], round(row["monto"])) in ya_existe
+        return (row["fecha"].isoformat(), round(row["monto"])) in ya_existe
 
     df["ya_importado"] = df.apply(es_duplicado, axis=1)
     df["incluir"] = ~df["ya_importado"]
