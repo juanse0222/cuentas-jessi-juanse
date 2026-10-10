@@ -9,6 +9,8 @@ import plotly.express as px
 import plotly.graph_objects as go
 from datetime import date
 
+import importador
+
 # ─── CONFIGURACIÓN DE PÁGINA ──────────────────────────────────────────────────
 st.set_page_config(
     page_title="Cuentas Jessi & Juanse",
@@ -1103,6 +1105,125 @@ def pagina_pendientes(df: pd.DataFrame, mes: date):
         st.divider()
 
 
+def pagina_importar():
+    st.subheader("📥 Importar extractos BBVA")
+    st.caption(
+        "Sube el Excel de movimientos o los PDF de extracto de cuenta de la app BBVA. "
+        "Nada se guarda hasta que revises y confirmes abajo."
+    )
+
+    archivos = st.file_uploader(
+        "Archivos (.xlsx o .pdf)", type=["xlsx", "pdf"], accept_multiple_files=True,
+    )
+    if not archivos:
+        return
+
+    partes = []
+    for f in archivos:
+        try:
+            partes.append(importador.parsear_archivo(f))
+        except Exception as e:
+            st.error(f"❌ No pude leer **{f.name}**: {e}")
+
+    if not partes:
+        return
+
+    df = pd.concat(partes, ignore_index=True)
+    df = df.sort_values("fecha", ascending=False).reset_index(drop=True)
+
+    # ── Detectar duplicados contra lo que ya está en la base ────────────────
+    fecha_min, fecha_max = df["fecha"].min(), df["fecha"].max()
+    try:
+        existentes = (
+            get_client().table("transacciones")
+            .select("fecha,descripcion,monto")
+            .gte("fecha", fecha_min.isoformat())
+            .lte("fecha", fecha_max.isoformat())
+            .execute()
+        )
+        ya_existe = {
+            (row["fecha"], row["descripcion"], round(float(row["monto"])))
+            for row in existentes.data
+        }
+    except Exception:
+        ya_existe = set()
+
+    def es_duplicado(row):
+        return (row["fecha"].isoformat(), row["descripcion"], round(row["monto"])) in ya_existe
+
+    df["ya_importado"] = df.apply(es_duplicado, axis=1)
+    df["incluir"] = ~df["ya_importado"]
+    df["mes_presupuestal"] = df["fecha"].apply(
+        lambda f: mes_anterior(f) if f.day <= 10 else date(f.year, f.month, 1)
+    )
+    df["persona"] = "Ambos"
+
+    opciones_cat = ["❓ Sin categoría (revisar)"]
+    opciones_cat += [f"{cat} → {sub}" for cat, subs in GASTOS.items() for sub in subs]
+    opciones_cat += [f"{cat} → {sub}" for cat, subs in INGRESOS.items() for sub in subs]
+
+    def cat_default(row):
+        if row["categoria_sugerida"] and row["subcategoria_sugerida"]:
+            return f"{row['categoria_sugerida']} → {row['subcategoria_sugerida']}"
+        return "❓ Sin categoría (revisar)"
+
+    df["categoria_subcategoria"] = df.apply(cat_default, axis=1)
+
+    n_dup = int(df["ya_importado"].sum())
+    n_sin_cat = int((df["categoria_subcategoria"] == "❓ Sin categoría (revisar)").sum())
+    col1, col2, col3 = st.columns(3)
+    col1.metric("📄 Movimientos leídos", len(df))
+    col2.metric("♻️ Ya importados antes", n_dup)
+    col3.metric("❓ Sin categoría sugerida", n_sin_cat)
+    if n_sin_cat:
+        st.info("Las filas **❓ Sin categoría** no se importarán hasta que les asignes una categoría válida.")
+
+    st.markdown("#### Revisa antes de confirmar")
+    columnas_visibles = [
+        "incluir", "fecha", "descripcion", "monto", "tipo",
+        "persona", "categoria_subcategoria", "mes_presupuestal", "ya_importado",
+    ]
+    editado = st.data_editor(
+        df[columnas_visibles],
+        key="editor_importar",
+        use_container_width=True,
+        hide_index=True,
+        disabled=["ya_importado"],
+        column_config={
+            "incluir": st.column_config.CheckboxColumn("Incluir"),
+            "fecha": st.column_config.DateColumn("Fecha"),
+            "descripcion": st.column_config.TextColumn("Descripción banco", width="medium"),
+            "monto": st.column_config.NumberColumn("Monto", format="$ %d"),
+            "tipo": st.column_config.SelectboxColumn("Tipo", options=["gasto", "ingreso"]),
+            "persona": st.column_config.SelectboxColumn("Quién", options=PERSONAS),
+            "categoria_subcategoria": st.column_config.SelectboxColumn(
+                "Categoría → Subcategoría", options=opciones_cat, width="large",
+            ),
+            "mes_presupuestal": st.column_config.DateColumn("Salario de"),
+            "ya_importado": st.column_config.CheckboxColumn("¿Ya estaba?"),
+        },
+    )
+
+    if st.button("💾 Confirmar importación", type="primary", use_container_width=True):
+        insertados, omitidos = 0, 0
+        for _, row in editado.iterrows():
+            if not row["incluir"]:
+                omitidos += 1
+                continue
+            if row["categoria_subcategoria"] == "❓ Sin categoría (revisar)":
+                omitidos += 1
+                continue
+            categoria, subcategoria = row["categoria_subcategoria"].split(" → ", 1)
+            guardar(
+                row["fecha"], row["mes_presupuestal"], row["persona"], row["tipo"],
+                categoria, subcategoria, row["descripcion"], row["monto"],
+            )
+            insertados += 1
+        st.success(f"✅ {insertados} movimientos importados · {omitidos} omitidos")
+        if insertados:
+            st.rerun()
+
+
 # ─── MAIN ─────────────────────────────────────────────────────────────────────
 
 def main():
@@ -1141,8 +1262,8 @@ def main():
     df = cargar_mes(mes_sel)
     items_df = cargar_items(mes_sel)
 
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-        "📊 Inicio", "➕ Agregar", "🛒 Lista", "📝 Pendientes", "📋 Historial", "📈 Análisis"
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+        "📊 Inicio", "➕ Agregar", "🛒 Lista", "📝 Pendientes", "📋 Historial", "📈 Análisis", "📥 Importar"
     ])
     with tab1:
         pagina_dashboard(df, mes_sel)
@@ -1156,6 +1277,8 @@ def main():
         pagina_historial(df)
     with tab6:
         pagina_analisis(df)
+    with tab7:
+        pagina_importar()
 
 
 if __name__ == "__main__":

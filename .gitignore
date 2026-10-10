@@ -5,3 +5,8 @@ __pycache__/
 *.pyc
 .DS_Store
 .env
+
+# Extractos bancarios reales — datos financieros sensibles, nunca al repo
+BBVA extract details/
+Bancoomeva extract details/
+*extract details/
