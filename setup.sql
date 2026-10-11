@@ -52,3 +52,22 @@ ALTER TABLE items_lista ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "acceso_app" ON items_lista;
 CREATE POLICY "acceso_app" ON items_lista
     FOR ALL USING (true);
+
+-- Historial de importaciones (pestaña "🗂️ Historial Importaciones")
+CREATE TABLE IF NOT EXISTS importaciones_log (
+    id            UUID        DEFAULT gen_random_uuid() PRIMARY KEY,
+    fecha_hora    TIMESTAMPTZ DEFAULT NOW(),
+    realizado_por TEXT        NOT NULL,
+    fuente        TEXT        NOT NULL,
+    reconocidos   INTEGER     NOT NULL DEFAULT 0,
+    omitidos      INTEGER     NOT NULL DEFAULT 0,
+    detalle       TEXT        DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_importaciones_fecha ON importaciones_log(fecha_hora);
+
+ALTER TABLE importaciones_log ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "acceso_app" ON importaciones_log;
+CREATE POLICY "acceso_app" ON importaciones_log
+    FOR ALL USING (true);

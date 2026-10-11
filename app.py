@@ -420,6 +420,46 @@ def pagar_item(id_: str, fecha, mes_presupuestal, persona, monto, categoria, sub
     get_client().table("items_lista").update({"pagado": True}).eq("id", id_).execute()
 
 
+# ── Historial de importaciones ─────────────────────────────────────────────────
+
+def nombre_usuario_actual() -> str:
+    email = getattr(st.user, "email", None) if hasattr(st, "user") else None
+    if email == "jessikanandez@gmail.com":
+        return "Jessi"
+    if email == "juansehurtado@gmail.com":
+        return "Juanse"
+    return email or "Desconocido"
+
+
+def guardar_log_importacion(fuente: str, reconocidos: int, omitidos: int, detalle: str = ""):
+    get_client().table("importaciones_log").insert({
+        "realizado_por": nombre_usuario_actual(),
+        "fuente": fuente,
+        "reconocidos": int(reconocidos),
+        "omitidos": int(omitidos),
+        "detalle": detalle,
+    }).execute()
+
+
+def cargar_log_importaciones(limite: int = 100) -> pd.DataFrame:
+    cols = ["id", "fecha_hora", "realizado_por", "fuente", "reconocidos", "omitidos", "detalle"]
+    try:
+        res = (
+            get_client().table("importaciones_log")
+            .select("*")
+            .order("fecha_hora", desc=True)
+            .limit(limite)
+            .execute()
+        )
+        if not res.data:
+            return pd.DataFrame(columns=cols)
+        df = pd.DataFrame(res.data)
+        df["fecha_hora"] = pd.to_datetime(df["fecha_hora"])
+        return df
+    except Exception:
+        return pd.DataFrame(columns=cols)
+
+
 # ─── PÁGINAS ──────────────────────────────────────────────────────────────────
 
 def pagina_dashboard(df: pd.DataFrame, mes: date):
@@ -1279,19 +1319,30 @@ def pagina_importar():
 
     if st.button("💾 Confirmar importación", type="primary", use_container_width=True):
         insertados, omitidos = 0, 0
-        for _, row in editado.iterrows():
-            if not row["incluir"]:
+        conteo_fuente = {}  # fuente -> [insertados, omitidos]
+        for idx, row in editado.iterrows():
+            fuente = df.loc[idx, "origen"] if "origen" in df.columns else "Archivo"
+            conteo_fuente.setdefault(fuente, [0, 0])
+
+            if not row["incluir"] or row["categoria_subcategoria"] == "❓ Sin categoría (revisar)":
                 omitidos += 1
+                conteo_fuente[fuente][1] += 1
                 continue
-            if row["categoria_subcategoria"] == "❓ Sin categoría (revisar)":
-                omitidos += 1
-                continue
+
             categoria, subcategoria = row["categoria_subcategoria"].split(" → ", 1)
             guardar(
                 row["fecha"], row["mes_presupuestal"], row["persona"], row["tipo"],
                 categoria, subcategoria, row["descripcion"], row["monto"],
             )
             insertados += 1
+            conteo_fuente[fuente][0] += 1
+
+        for fuente, (n_ins, n_omit) in conteo_fuente.items():
+            try:
+                guardar_log_importacion(fuente, n_ins, n_omit)
+            except Exception:
+                pass  # el registro del log nunca debe bloquear la importación en sí
+
         st.success(f"✅ {insertados} movimientos importados · {omitidos} omitidos")
         if insertados:
             st.rerun()
@@ -1352,6 +1403,35 @@ def pagina_impuestos():
             yaxis_tickformat=",.0f",
         )
         st.plotly_chart(fig, use_container_width=True)
+
+
+def pagina_historial_importaciones():
+    st.subheader("🗂️ Historial de importaciones")
+    st.caption("Registro de todo lo subido y procesado en la pestaña Importar: quién, cuándo, de dónde y cuánto.")
+
+    log = cargar_log_importaciones()
+    if log.empty:
+        st.info("📭 Todavía no hay importaciones registradas.")
+        return
+
+    total_ins = int(log["reconocidos"].sum())
+    total_omit = int(log["omitidos"].sum())
+    col1, col2, col3 = st.columns(3)
+    col1.metric("📥 Eventos de importación", len(log))
+    col2.metric("✅ Total insertado", total_ins)
+    col3.metric("⏭️ Total omitido", total_omit)
+    st.divider()
+
+    tabla = log.copy()
+    tabla["fecha_hora"] = tabla["fecha_hora"].dt.strftime("%Y-%m-%d %H:%M")
+    tabla = tabla.rename(columns={
+        "fecha_hora": "Fecha y hora", "realizado_por": "Quién",
+        "fuente": "Fuente", "reconocidos": "Insertados", "omitidos": "Omitidos",
+    })
+    st.dataframe(
+        tabla[["Fecha y hora", "Quién", "Fuente", "Insertados", "Omitidos"]],
+        use_container_width=True, hide_index=True,
+    )
 
 
 # ─── MAIN ─────────────────────────────────────────────────────────────────────
@@ -1431,8 +1511,9 @@ def main():
     df = cargar_mes(mes_sel)
     items_df = cargar_items(mes_sel)
 
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
-        "📊 Inicio", "➕ Agregar", "🛒 Lista", "📝 Pendientes", "📋 Historial", "📈 Análisis", "📥 Importar", "💵 Impuestos"
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
+        "📊 Inicio", "➕ Agregar", "🛒 Lista", "📝 Pendientes", "📋 Historial", "📈 Análisis",
+        "📥 Importar", "💵 Impuestos", "🗂️ Log Importaciones",
     ])
     with tab1:
         pagina_dashboard(df, mes_sel)
@@ -1450,6 +1531,8 @@ def main():
         pagina_importar()
     with tab8:
         pagina_impuestos()
+    with tab9:
+        pagina_historial_importaciones()
 
 
 if __name__ == "__main__":
