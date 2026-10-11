@@ -273,6 +273,8 @@ GASTOS = {
 
 PERSONAS = ["Jessi", "Juanse", "Ambos"]
 
+USUARIOS_PERMITIDOS = {"juansehurtado@gmail.com", "jessikanandez@gmail.com"}
+
 TOTAL_INGRESOS_PREVISTOS = sum(v for src in INGRESOS.values() for v in src.values())
 TOTAL_GASTOS_PREVISTOS = sum(v for cat in GASTOS.values() for v in cat.values())
 
@@ -1296,7 +1298,41 @@ def pagina_importar():
 
 # ─── MAIN ─────────────────────────────────────────────────────────────────────
 
+def requerir_login():
+    try:
+        logueado = st.user.is_logged_in
+    except AttributeError:
+        logueado = False
+
+    if not logueado:
+        st.markdown("""
+        <div class="app-header">
+            <div style="font-size:2.4rem; line-height:1;">💰</div>
+            <h1>Cuentas Jessi & Juanse</h1>
+            <p>Control financiero familiar</p>
+        </div>
+        """, unsafe_allow_html=True)
+        st.info("🔒 Esta app es privada. Inicia sesión con tu cuenta de Google para continuar.")
+        if st.button("Iniciar sesión con Google", type="primary", use_container_width=True):
+            try:
+                st.login()
+            except Exception:
+                st.error(
+                    "⚠️ El login con Google todavía no está configurado en "
+                    "`.streamlit/secrets.toml` (sección `[auth]`)."
+                )
+        st.stop()
+
+    if st.user.email not in USUARIOS_PERMITIDOS:
+        st.error(f"🚫 **{st.user.email}** no tiene acceso a esta app.")
+        if st.button("Cerrar sesión"):
+            st.logout()
+        st.stop()
+
+
 def main():
+    requerir_login()
+
     # ── Header centrado ───────────────────────────────────────────────────────
     st.markdown("""
     <div class="app-header">
@@ -1305,6 +1341,11 @@ def main():
         <p>Control financiero familiar</p>
     </div>
     """, unsafe_allow_html=True)
+
+    col_sesion_l, col_sesion_r = st.columns([5, 1])
+    with col_sesion_r:
+        if st.button("🚪 Salir", use_container_width=True, help=st.user.email):
+            st.logout()
 
     # ── Selector de mes centrado ──────────────────────────────────────────────
     hoy = date.today()
