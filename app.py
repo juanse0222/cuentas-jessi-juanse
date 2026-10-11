@@ -10,6 +10,7 @@ import plotly.graph_objects as go
 from datetime import date
 
 import importador
+import asesor
 import impuestos
 
 # ─── CONFIGURACIÓN DE PÁGINA ──────────────────────────────────────────────────
@@ -1434,6 +1435,68 @@ def pagina_historial_importaciones():
     )
 
 
+def _construir_resumen_mes(df: pd.DataFrame, mes: date) -> dict:
+    gastos_df = df[df["tipo"] == "gasto"] if not df.empty else pd.DataFrame()
+    gastos_reales = float(gastos_df["monto"].sum()) if not gastos_df.empty else 0.0
+    saldo = TOTAL_INGRESOS_PREVISTOS - gastos_reales
+
+    categorias = []
+    for cat, items in GASTOS.items():
+        presupuestado = sum(items.values())
+        if presupuestado == 0:
+            continue
+        gastado = float(gastos_df[gastos_df["categoria"] == cat]["monto"].sum()) if not gastos_df.empty else 0.0
+        categorias.append({
+            "categoria": cat, "presupuestado": presupuestado, "gastado": gastado,
+            "pct": (gastado / presupuestado * 100) if presupuestado > 0 else 0,
+        })
+
+    top_gastos = []
+    if not gastos_df.empty:
+        top5 = gastos_df.nlargest(5, "monto")
+        for _, row in top5.iterrows():
+            top_gastos.append({
+                "fecha": str(row["fecha"]), "concepto": row["subcategoria"],
+                "categoria": row["categoria"], "monto": float(row["monto"]),
+            })
+
+    return {
+        "mes_nombre": MESES_ES[mes.month], "anio": mes.year,
+        "ingresos_previstos": TOTAL_INGRESOS_PREVISTOS,
+        "gastos_totales": gastos_reales, "saldo": saldo,
+        "categorias": categorias, "top_gastos": top_gastos,
+    }
+
+
+def pagina_asesor(df: pd.DataFrame, mes: date):
+    st.subheader("🤖 Asesor financiero")
+    st.caption(
+        "Analiza tu presupuesto del mes actual con IA y recibe observaciones y "
+        "sugerencias. No es asesoría de inversión ni tributaria con licencia."
+    )
+
+    api_key = st.secrets.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        st.info(
+            "No configurado todavía. Agrega `ANTHROPIC_API_KEY` en "
+            "`.streamlit/secrets.toml` (obtén una clave en console.anthropic.com)."
+        )
+        return
+
+    if st.button("🔍 Analizar mi mes actual", type="primary", use_container_width=True):
+        resumen = _construir_resumen_mes(df, mes)
+        with st.spinner("Analizando tu presupuesto…"):
+            try:
+                respuesta = asesor.analizar_mes(resumen, api_key)
+                st.session_state["analisis_asesor"] = respuesta
+            except Exception as e:
+                st.error(f"❌ No pude generar el análisis: {e}")
+
+    if st.session_state.get("analisis_asesor"):
+        st.divider()
+        st.markdown(st.session_state["analisis_asesor"])
+
+
 # ─── MAIN ─────────────────────────────────────────────────────────────────────
 
 def requerir_login():
@@ -1511,9 +1574,9 @@ def main():
     df = cargar_mes(mes_sel)
     items_df = cargar_items(mes_sel)
 
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10 = st.tabs([
         "📊 Inicio", "➕ Agregar", "🛒 Lista", "📝 Pendientes", "📋 Historial", "📈 Análisis",
-        "📥 Importar", "💵 Impuestos", "🗂️ Log Importaciones",
+        "📥 Importar", "💵 Impuestos", "🗂️ Log Importaciones", "🤖 Asesor",
     ])
     with tab1:
         pagina_dashboard(df, mes_sel)
@@ -1533,6 +1596,8 @@ def main():
         pagina_impuestos()
     with tab9:
         pagina_historial_importaciones()
+    with tab10:
+        pagina_asesor(df, mes_sel)
 
 
 if __name__ == "__main__":
