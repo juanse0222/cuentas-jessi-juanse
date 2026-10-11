@@ -10,6 +10,7 @@ import plotly.graph_objects as go
 from datetime import date
 
 import importador
+import impuestos
 
 # ─── CONFIGURACIÓN DE PÁGINA ──────────────────────────────────────────────────
 st.set_page_config(
@@ -1296,6 +1297,63 @@ def pagina_importar():
             st.rerun()
 
 
+def pagina_impuestos():
+    st.subheader("💵 Resumen de Declaración de Renta")
+    st.caption(
+        "Sube tus Formularios 210 (DIAN) para ver patrimonio, ingresos e impuesto "
+        "por año. Esto **no se guarda** — se procesa solo en esta sesión."
+    )
+
+    archivos = st.file_uploader(
+        "Formulario 210 (PDF)", type=["pdf"], accept_multiple_files=True, key="pdfs_impuestos",
+    )
+    if not archivos:
+        st.info("📭 Sube uno o más Formularios 210 para ver el resumen.")
+        return
+
+    resultados = impuestos.parsear_declaraciones(archivos)
+    no_reconocidos = len(archivos) - len(resultados)
+    if no_reconocidos:
+        st.warning(f"⚠️ {no_reconocidos} archivo(s) no se reconocieron como Formulario 210.")
+    if not resultados:
+        return
+
+    for r in resultados:
+        st.markdown(f"#### Año gravable {r['anio']}")
+        col1, col2, col3 = st.columns(3)
+        col1.metric("🏦 Patrimonio líquido", fmt(r["patrimonio_liquido"]))
+        col2.metric("💼 Renta líquida gravable", fmt(r["renta_liquida_gravable"]))
+        saldo = r["saldo_a_pagar"] or 0
+        favor = r["saldo_a_favor"] or 0
+        if saldo > 0:
+            col3.metric("📄 Saldo a pagar", fmt(saldo), delta="a pagar", delta_color="inverse")
+        elif favor > 0:
+            col3.metric("📄 Saldo a favor", fmt(favor), delta="a favor")
+        else:
+            col3.metric("📄 Saldo", fmt(0))
+        with st.expander("Ver más detalle"):
+            st.markdown(
+                f"- Patrimonio bruto: {fmt(r['patrimonio_bruto'])}\n"
+                f"- Deudas: {fmt(r['deudas'])}\n"
+                f"- Impuesto a cargo: {fmt(r['impuesto_a_cargo'])}\n"
+                f"- Retenciones: {fmt(r['retenciones'])}"
+            )
+        st.divider()
+
+    if len(resultados) > 1:
+        st.markdown("#### Tendencia entre años")
+        df_tend = pd.DataFrame(resultados)
+        fig = go.Figure()
+        fig.add_bar(x=df_tend["anio"], y=df_tend["patrimonio_liquido"], name="Patrimonio líquido")
+        fig.add_bar(x=df_tend["anio"], y=df_tend["renta_liquida_gravable"], name="Renta líquida gravable")
+        fig.update_layout(
+            barmode="group", height=320, margin=dict(l=5, r=5, t=20, b=5),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02),
+            yaxis_tickformat=",.0f",
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+
 # ─── MAIN ─────────────────────────────────────────────────────────────────────
 
 def requerir_login():
@@ -1373,8 +1431,8 @@ def main():
     df = cargar_mes(mes_sel)
     items_df = cargar_items(mes_sel)
 
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
-        "📊 Inicio", "➕ Agregar", "🛒 Lista", "📝 Pendientes", "📋 Historial", "📈 Análisis", "📥 Importar"
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
+        "📊 Inicio", "➕ Agregar", "🛒 Lista", "📝 Pendientes", "📋 Historial", "📈 Análisis", "📥 Importar", "💵 Impuestos"
     ])
     with tab1:
         pagina_dashboard(df, mes_sel)
@@ -1390,6 +1448,8 @@ def main():
         pagina_analisis(df)
     with tab7:
         pagina_importar()
+    with tab8:
+        pagina_impuestos()
 
 
 if __name__ == "__main__":
