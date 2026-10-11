@@ -1153,6 +1153,10 @@ def pagina_importar():
     archivos = st.file_uploader(
         "Archivos (.xlsx o .pdf)", type=["xlsx", "pdf"], accept_multiple_files=True,
     )
+    clave_pdf = st.text_input(
+        "🔒 Contraseña del PDF (solo si alguno la pide, ej. Banco de Bogotá)",
+        type="password",
+    )
 
     partes = []
     for nombre, df_correo in st.session_state["correo_dfs"].items():
@@ -1162,7 +1166,9 @@ def pagina_importar():
             partes.append(df_correo)
     for f in archivos or []:
         try:
-            partes.append(importador.parsear_archivo(f))
+            partes.append(importador.parsear_archivo(f, password=clave_pdf or None))
+        except importador.PDFProtegidoError as e:
+            st.warning(f"🔒 {e}")
         except Exception as e:
             st.error(f"❌ No pude leer **{f.name}**: {e}")
 

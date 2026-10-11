@@ -372,13 +372,121 @@ def parsear_alkosto(file) -> pd.DataFrame:
     return pd.DataFrame(filas)
 
 
-def parsear_archivo(file) -> pd.DataFrame:
+# ─── Extracto Cuenta de Ahorros Banco de Bogotá (PDF con contraseña) ────────
+# El PDF viene protegido con contraseña (normalmente la cédula del titular).
+# Cada movimiento empieza con "DD/MM CODIGO ..." y puede continuar en una
+# segunda línea sin fecha (el texto se corta a mitad de palabra al envolver).
+
+_BOGOTA_INICIO_BLOQUE = re.compile(r"^(\d{2}/\d{2})\s+[A-Z0-9]{3,6}\s+", re.MULTILINE)
+_BOGOTA_MONTO = re.compile(r"-?[\d,]+\.\d{2}")
+_BOGOTA_RUIDO = re.compile(
+    r"\b(Tarj\s*#.*|efectuad[oa]\s+el\s+\d{8}.*|efectuad[oa]\s+el\s+\d{2}/\d{2}/\d{4}\.?.*)",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _es_banco_bogota(texto: str) -> bool:
+    return "Extracto Cuenta Ahorros" in texto or "Extracto Cuenta Corriente" in texto
+
+
+def parsear_banco_bogota(file, password: str) -> pd.DataFrame:
+    with pdfplumber.open(file, password=password) as pdf:
+        texto_completo = "\n".join(p.extract_text() or "" for p in pdf.pages)
+
+    # pdfplumber a veces funde la línea "Tarj # xxxxxx******xxxx" del final de
+    # un movimiento con el inicio del siguiente ("DD/MM CODIGO ...") en una
+    # sola línea de texto sin salto — eso hace que el siguiente movimiento
+    # quede invisible para el regex de inicio de bloque (ancla ^). Se separa
+    # a la fuerza antes de partir en bloques.
+    for patron_cierre in (
+        r"(\d{6}\*{6}\d{4})",            # línea "Tarj # xxxxxx******xxxx"
+        r"(efectuad[oa]\s+el\s+\d{8})",  # cierre sin tarjeta (ej. Pago PSE)
+        r"([\d,]+\.\d{2})",              # cierre que termina directo en el saldo (ej. Intereses ganados)
+    ):
+        texto_completo = re.sub(
+            patron_cierre + r"\s+(\d{2}/\d{2}\s+[A-Z0-9]{3,6}\s)",
+            r"\1\n\2",
+            texto_completo,
+        )
+
+    m_anio = re.search(r"FECHA EXTRACTO.*?(\d{4})", texto_completo)
+    anio = int(m_anio.group(1)) if m_anio else datetime.now().year
+
+    posiciones = [m.start() for m in _BOGOTA_INICIO_BLOQUE.finditer(texto_completo)]
+    fechas_raw = [m.group(1) for m in _BOGOTA_INICIO_BLOQUE.finditer(texto_completo)]
+
+    filas = []
+    for i, pos in enumerate(posiciones):
+        fin = posiciones[i + 1] if i + 1 < len(posiciones) else len(texto_completo)
+        bloque = texto_completo[pos:fin]
+
+        montos = _BOGOTA_MONTO.findall(bloque)
+        if len(montos) < 2:
+            continue
+        # Este PDF usa formato en-US ("-1,234.00"), a diferencia de los demás
+        # extractos que usan es-CO — se parsea directo, sin _parsear_monto_es.
+        monto = float(montos[0].replace(",", ""))
+
+        dia, mes = fechas_raw[i].split("/")
+        fecha = datetime(anio, int(mes), int(dia)).date()
+
+        descripcion = _BOGOTA_INICIO_BLOQUE.sub("", bloque, count=1)
+        descripcion = _BOGOTA_RUIDO.sub("", descripcion)
+        for m_str in montos[:2]:
+            descripcion = descripcion.replace(m_str, "")
+        descripcion = re.sub(r"\s+", " ", descripcion).strip(" .\n")
+
+        tipo = "ingreso" if monto > 0 else "gasto"
+        categoria, subcategoria = sugerir_categoria(descripcion, tipo)
+        if categoria is None:
+            desc_up = descripcion.upper()
+            if "BANCO FALABELLA" in desc_up:
+                categoria, subcategoria = "💳 Préstamos", "Tarjeta Falabella"
+            elif "FINANCIAMIENTO TUYA" in desc_up:
+                categoria, subcategoria = "💳 Préstamos", "Tarjeta Alkosto"
+            elif "BANCOOMEVA" in desc_up:
+                categoria, subcategoria = "💳 Préstamos", "Tarjeta Bancoomeva"
+
+        filas.append({
+            "fecha": fecha,
+            "descripcion": descripcion,
+            "monto": abs(monto),
+            "tipo": tipo,
+            "categoria_sugerida": categoria,
+            "subcategoria_sugerida": subcategoria,
+            "origen": "Banco de Bogotá PDF",
+        })
+    return pd.DataFrame(filas)
+
+
+class PDFProtegidoError(Exception):
+    """El PDF está protegido con contraseña y no se pudo abrir (falta o es incorrecta)."""
+
+
+def parsear_archivo(file, password: str | None = None) -> pd.DataFrame:
     nombre = file.name.lower()
     if nombre.endswith(".xlsx") or nombre.endswith(".xls"):
         return parsear_excel(file)
     if nombre.endswith(".pdf"):
-        with pdfplumber.open(file) as pdf:
-            texto_p1 = pdf.pages[0].extract_text() or ""
+        try:
+            with pdfplumber.open(file) as pdf:
+                texto_p1 = pdf.pages[0].extract_text() or ""
+        except Exception:
+            if not password:
+                raise PDFProtegidoError(
+                    f"'{file.name}' está protegido con contraseña. Ingrésala arriba e inténtalo de nuevo."
+                )
+            file.seek(0)
+            try:
+                with pdfplumber.open(file, password=password) as pdf:
+                    texto_p1 = pdf.pages[0].extract_text() or ""
+            except Exception:
+                raise PDFProtegidoError(f"La contraseña no abrió '{file.name}'.")
+            if _es_banco_bogota(texto_p1):
+                file.seek(0)
+                return parsear_banco_bogota(file, password)
+            raise ValueError(f"PDF protegido pero no reconocido: {file.name}")
+
         if _es_email_bbva(texto_p1):
             file.seek(0)
             with pdfplumber.open(file) as pdf:
