@@ -110,6 +110,11 @@ REGLAS_CATEGORIA = [
     ("FONDO DE INVERS", "💰 Ahorros e Inversiones", "Cuenta de inversión"),
     ("PATRIMONIOS AUT", "💰 Ahorros e Inversiones", "Cuenta de jubilación"),
 
+    # Mascotas
+    ("MASCOTA", "🐾 Mascotas", "Otro"),
+    ("VETERINAR", "🐾 Mascotas", "Veterinario"),
+    ("PETLAND", "🐾 Mascotas", "Otro"),
+
     # Impuestos
     ("IMPUESTO 4X1", "📄 Impuestos", "Otro"),
 

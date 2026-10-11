@@ -262,6 +262,13 @@ GASTOS = {
         "Libros": 0,
         "Otro": 0,
     },
+    "🐾 Mascotas": {
+        "Alimentación": 0,
+        "Veterinario": 0,
+        "Medicamentos": 0,
+        "Ropa y accesorios": 0,
+        "Otro": 0,
+    },
 }
 
 PERSONAS = ["Jessi", "Juanse", "Ambos"]
