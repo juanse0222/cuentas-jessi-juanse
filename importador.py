@@ -77,6 +77,7 @@ REGLAS_CATEGORIA = [
     # Cuidado personal / salud
     ("FARMATODO", "💆 Cuidado Personal", "Médicos / Salud"),
     ("DROGUERIA", "💆 Cuidado Personal", "Médicos / Salud"),
+    ("DROGUER", "💆 Cuidado Personal", "Médicos / Salud"),
     ("DROG ", "💆 Cuidado Personal", "Médicos / Salud"),
     ("CRUZ VERDE", "💆 Cuidado Personal", "Médicos / Salud"),
     ("CENTRO MEDICO", "💆 Cuidado Personal", "Médicos / Salud"),
@@ -86,9 +87,12 @@ REGLAS_CATEGORIA = [
     ("KRIKA BEAUTY", "💆 Cuidado Personal", "Pelo y uñas Jessi"),
 
     # Préstamos / tarjetas de crédito
-    ("BANCOOMEVA", "💳 Préstamos", "Tarjeta Bancoomeva"),
-    ("ALKOSTO", "💳 Préstamos", "Tarjeta Alkosto"),
-    ("FALABELLA", "💳 Préstamos", "Tarjeta Falabella"),
+    # Ojo: debe exigir "PSE A" para distinguir el PAGO de la tarjeta de una
+    # COMPRA hecha en la tienda física (ej. "COMPRA EN ALKOSTO CALI" no es
+    # un pago de tarjeta, es un gasto real que no debe caer en este bucket).
+    ("PSE A BANCOOMEVA", "💳 Préstamos", "Tarjeta Bancoomeva"),
+    ("PSE A ALKOSTO", "💳 Préstamos", "Tarjeta Alkosto"),
+    ("PSE A FALABELLA", "💳 Préstamos", "Tarjeta Falabella"),
 
     # Casa — servicios
     ("GASES DE OCCIDE", "🏠 Casa — Básico", "Gas (Gases de Occidente)"),
@@ -256,6 +260,118 @@ def _es_email_bbva(texto: str) -> bool:
     return "Establecimiento:" in texto and "Fecha de la operaci" in texto
 
 
+# ─── Extracto Tarjeta de Crédito CMR (Banco Falabella) ───────────────────────
+# El PDF simula negrita duplicando cada carácter (ej. "NNúúmmeerroo" en vez de
+# "Número"). Se normaliza antes de aplicar las expresiones regulares.
+
+_DOBLE_CARACTER = re.compile(r"(?:(.)\1){2,}")
+
+
+def _normalizar_doble(texto: str) -> str:
+    return _DOBLE_CARACTER.sub(lambda m: m.group(0)[0::2], texto)
+
+
+def _es_falabella(texto: str) -> bool:
+    return "Tarjeta de Crédito CMR" in texto or "Banco Falabella" in texto
+
+
+_LINEA_FALABELLA = re.compile(
+    r"^(\d{2}/\d{2}/\d{4})\s+(.+?)\s+[TA]{1,2}\s+(-?\$[\d.,]+)", re.MULTILINE
+)
+
+# Movimientos que son pagos/abonos a la propia tarjeta (no gasto nuevo —
+# ya se ve reflejado como salida de dinero en la cuenta desde la que se pagó).
+_FALABELLA_IGNORAR_PREFIJOS = ("PAGO TARJETA CMR",)
+
+
+def parsear_falabella(file) -> pd.DataFrame:
+    with pdfplumber.open(file) as pdf:
+        texto_completo = "\n".join(p.extract_text() or "" for p in pdf.pages)
+    texto_norm = _normalizar_doble(texto_completo)
+
+    filas = []
+    for m in _LINEA_FALABELLA.finditer(texto_norm):
+        fecha_str, descripcion, monto_str = m.groups()
+        descripcion = descripcion.strip()
+        if descripcion.upper().startswith(_FALABELLA_IGNORAR_PREFIJOS):
+            continue
+
+        fecha = datetime.strptime(fecha_str, "%d/%m/%Y").date()
+        monto = abs(_parsear_monto_es(monto_str))
+
+        categoria, subcategoria = sugerir_categoria(descripcion, "gasto")
+        if categoria is None:
+            desc_up = descripcion.upper()
+            if "SEGURO VIDA" in desc_up:
+                categoria, subcategoria = "🛡️ Seguro", "Otro"
+            elif "CUOTA MANEJO" in desc_up:
+                categoria, subcategoria = "💳 Préstamos", "Tarjeta Falabella"
+
+        filas.append({
+            "fecha": fecha,
+            "descripcion": descripcion,
+            "monto": monto,
+            "tipo": "gasto",
+            "categoria_sugerida": categoria,
+            "subcategoria_sugerida": subcategoria,
+            "origen": "Falabella PDF",
+        })
+    return pd.DataFrame(filas)
+
+
+# ─── Extracto Tarjeta de Crédito Alkosto (Tuya) ──────────────────────────────
+
+def _es_alkosto(texto: str) -> bool:
+    return "Tuya" in texto and "Tarjeta de Crédito" in texto
+
+
+_LINEA_ALKOSTO = re.compile(
+    r"^(\d{4}/\d{2}/\d{2})\s+([+-])(.+?)\s+([\d.,]+)\s+([\d.,]+)\s+([\d.,]+)\s+"
+    r"[\d.,]+%\s+[\d.,]+%\s+\d+/(\d+)\s*$",
+    re.MULTILINE,
+)
+
+
+def parsear_alkosto(file) -> pd.DataFrame:
+    with pdfplumber.open(file) as pdf:
+        texto_completo = "\n".join(p.extract_text() or "" for p in pdf.pages)
+
+    filas = []
+    for m in _LINEA_ALKOSTO.finditer(texto_completo):
+        fecha_str, signo, descripcion, valor_transaccion, _saldo, cuota_mes, total_cuotas = m.groups()
+        if signo == "-":
+            continue  # pago o reverso, no es gasto nuevo
+
+        fecha = datetime.strptime(fecha_str, "%Y/%m/%d").date()
+        descripcion = descripcion.strip()
+        if "|" in descripcion:
+            descripcion = descripcion.split("|", 1)[1].strip()
+
+        # Compras a cuotas: lo que corresponde pagar este período.
+        # Cargos de una sola vez (cuota de manejo, seguro, 0/0): el valor total.
+        monto = _parsear_monto_es(cuota_mes) if int(total_cuotas) > 0 else _parsear_monto_es(valor_transaccion)
+        monto = abs(monto)
+
+        categoria, subcategoria = sugerir_categoria(descripcion, "gasto")
+        if categoria is None:
+            desc_up = descripcion.upper()
+            if "SEG DEUD" in desc_up:
+                categoria, subcategoria = "🛡️ Seguro", "Otro"
+            elif "CUOTA DE MANEJO" in desc_up:
+                categoria, subcategoria = "💳 Préstamos", "Tarjeta Alkosto"
+
+        filas.append({
+            "fecha": fecha,
+            "descripcion": descripcion,
+            "monto": monto,
+            "tipo": "gasto",
+            "categoria_sugerida": categoria,
+            "subcategoria_sugerida": subcategoria,
+            "origen": "Alkosto PDF",
+        })
+    return pd.DataFrame(filas)
+
+
 def parsear_archivo(file) -> pd.DataFrame:
     nombre = file.name.lower()
     if nombre.endswith(".xlsx") or nombre.endswith(".xls"):
@@ -268,6 +384,12 @@ def parsear_archivo(file) -> pd.DataFrame:
             with pdfplumber.open(file) as pdf:
                 texto_completo = "\n".join(p.extract_text() or "" for p in pdf.pages)
             return parsear_email_texto(texto_completo)
+        if _es_falabella(texto_p1):
+            file.seek(0)
+            return parsear_falabella(file)
+        if _es_alkosto(texto_p1):
+            file.seek(0)
+            return parsear_alkosto(file)
         file.seek(0)
         return parsear_pdf(file)
     raise ValueError(f"Formato no soportado: {file.name}")
