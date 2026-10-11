@@ -1112,26 +1112,35 @@ def pagina_importar():
         "Nada se guarda hasta que revises y confirmes abajo."
     )
 
-    if "correo_df" not in st.session_state:
-        st.session_state["correo_df"] = None
+    if "correo_dfs" not in st.session_state:
+        st.session_state["correo_dfs"] = {}
 
-    # ── Buscar en correo (IMAP) ─────────────────────────────────────────────
-    usuario_correo = st.secrets.get("GMAIL_JUANSE_USER")
-    clave_correo = st.secrets.get("GMAIL_JUANSE_APP_PASSWORD")
+    # ── Buscar en correo (IMAP) ──────────────────────────────────────────────
+    cuentas_correo = [
+        ("Juanse", "GMAIL_JUANSE_USER", "GMAIL_JUANSE_APP_PASSWORD"),
+        ("Jessi", "GMAIL_JESSI_USER", "GMAIL_JESSI_APP_PASSWORD"),
+    ]
 
-    with st.expander("📬 Buscar en mi correo (Juanse)", expanded=False):
-        if not (usuario_correo and clave_correo):
-            st.info(
-                "No configurado todavía. Agrega `GMAIL_JUANSE_USER` y "
-                "`GMAIL_JUANSE_APP_PASSWORD` en `.streamlit/secrets.toml`."
+    for nombre, clave_user, clave_pass in cuentas_correo:
+        usuario_correo = st.secrets.get(clave_user)
+        clave_correo = st.secrets.get(clave_pass)
+
+        with st.expander(f"📬 Buscar en el correo de {nombre}", expanded=False):
+            if not (usuario_correo and clave_correo):
+                st.info(
+                    f"No configurado todavía. Agrega `{clave_user}` y "
+                    f"`{clave_pass}` en `.streamlit/secrets.toml`."
+                )
+                continue
+
+            dias = st.slider(
+                "Buscar correos de los últimos N días", 1, 90, 30, key=f"dias_{nombre}",
             )
-        else:
-            dias = st.slider("Buscar correos de los últimos N días", 1, 90, 30)
-            if st.button("🔍 Buscar notificaciones BBVA", use_container_width=True):
-                with st.spinner("Conectando a Gmail…"):
+            if st.button(f"🔍 Buscar notificaciones BBVA ({nombre})", use_container_width=True, key=f"buscar_{nombre}"):
+                with st.spinner(f"Conectando al correo de {nombre}…"):
                     try:
                         df_correo = importador.buscar_correos_bbva(usuario_correo, clave_correo, dias)
-                        st.session_state["correo_df"] = df_correo
+                        st.session_state["correo_dfs"][nombre] = df_correo
                         total = df_correo.attrs.get("total_mensajes", 0)
                         no_rec = df_correo.attrs.get("no_reconocidos", 0)
                         st.success(
@@ -1139,15 +1148,18 @@ def pagina_importar():
                             f"{len(df_correo)} reconocidos · {no_rec} con formato no soportado aún"
                         )
                     except Exception as e:
-                        st.error(f"❌ No pude conectar al correo: {e}")
+                        st.error(f"❌ No pude conectar al correo de {nombre}: {e}")
 
     archivos = st.file_uploader(
         "Archivos (.xlsx o .pdf)", type=["xlsx", "pdf"], accept_multiple_files=True,
     )
 
     partes = []
-    if st.session_state["correo_df"] is not None and not st.session_state["correo_df"].empty:
-        partes.append(st.session_state["correo_df"])
+    for nombre, df_correo in st.session_state["correo_dfs"].items():
+        if df_correo is not None and not df_correo.empty:
+            df_correo = df_correo.copy()
+            df_correo["persona_sugerida"] = nombre
+            partes.append(df_correo)
     for f in archivos or []:
         try:
             partes.append(importador.parsear_archivo(f))
@@ -1187,7 +1199,10 @@ def pagina_importar():
     df["mes_presupuestal"] = df["fecha"].apply(
         lambda f: mes_anterior(f) if f.day <= 10 else date(f.year, f.month, 1)
     )
-    df["persona"] = "Ambos"
+    if "persona_sugerida" in df.columns:
+        df["persona"] = df["persona_sugerida"].fillna("Ambos")
+    else:
+        df["persona"] = "Ambos"
 
     opciones_cat = ["❓ Sin categoría (revisar)"]
     opciones_cat += [f"{cat} → {sub}" for cat, subs in GASTOS.items() for sub in subs]
