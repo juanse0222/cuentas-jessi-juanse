@@ -1120,6 +1120,11 @@ def pagina_importar():
         ("Juanse", "GMAIL_JUANSE_USER", "GMAIL_JUANSE_APP_PASSWORD"),
         ("Jessi", "GMAIL_JESSI_USER", "GMAIL_JESSI_APP_PASSWORD"),
     ]
+    buscadores_correo = [
+        ("BBVA", importador.buscar_correos_bbva),
+        ("FVL", importador.buscar_correos_fvl),
+        ("SURA", importador.buscar_correos_sura),
+    ]
 
     for nombre, clave_user, clave_pass in cuentas_correo:
         usuario_correo = st.secrets.get(clave_user)
@@ -1134,21 +1139,27 @@ def pagina_importar():
                 continue
 
             dias = st.slider(
-                "Buscar correos de los últimos N días", 1, 90, 30, key=f"dias_{nombre}",
+                "Buscar correos de los últimos N días", 1, 365, 90, key=f"dias_{nombre}",
             )
-            if st.button(f"🔍 Buscar notificaciones BBVA ({nombre})", use_container_width=True, key=f"buscar_{nombre}"):
+            if st.button(f"🔍 Buscar notificaciones ({nombre})", use_container_width=True, key=f"buscar_{nombre}"):
+                partes_correo = []
+                resumen = []
                 with st.spinner(f"Conectando al correo de {nombre}…"):
-                    try:
-                        df_correo = importador.buscar_correos_bbva(usuario_correo, clave_correo, dias)
-                        st.session_state["correo_dfs"][nombre] = df_correo
-                        total = df_correo.attrs.get("total_mensajes", 0)
-                        no_rec = df_correo.attrs.get("no_reconocidos", 0)
-                        st.success(
-                            f"✅ {total} correos de BBVA encontrados · "
-                            f"{len(df_correo)} reconocidos · {no_rec} con formato no soportado aún"
-                        )
-                    except Exception as e:
-                        st.error(f"❌ No pude conectar al correo de {nombre}: {e}")
+                    for fuente, buscador in buscadores_correo:
+                        try:
+                            df_fuente = buscador(usuario_correo, clave_correo, dias)
+                            if not df_fuente.empty:
+                                partes_correo.append(df_fuente)
+                            resumen.append(
+                                f"{fuente}: {len(df_fuente)}/{df_fuente.attrs.get('total_mensajes', 0)}"
+                            )
+                        except Exception as e:
+                            st.error(f"❌ {fuente} — no pude conectar al correo de {nombre}: {e}")
+                st.session_state["correo_dfs"][nombre] = (
+                    pd.concat(partes_correo, ignore_index=True) if partes_correo else pd.DataFrame()
+                )
+                if resumen:
+                    st.success("✅ " + " · ".join(resumen) + " (reconocidos/encontrados)")
 
     archivos = st.file_uploader(
         "Archivos (.xlsx o .pdf)", type=["xlsx", "pdf"], accept_multiple_files=True,

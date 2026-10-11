@@ -8,6 +8,7 @@ from __future__ import annotations
 import html
 import imaplib
 import email
+import io
 import re
 from datetime import datetime, timedelta
 
@@ -543,12 +544,15 @@ def _cuerpo_texto(msg: email.message.Message) -> str:
     return html.unescape(payload.decode(charset, errors="replace")) if payload else ""
 
 
-def buscar_correos_bbva(usuario: str, app_password: str, dias: int = 30) -> pd.DataFrame:
+def _buscar_correos_imap(
+    usuario: str, app_password: str, dias: int, remitente: str,
+    criterio_extra: str, extraer_fila,
+) -> pd.DataFrame:
     """
-    Se conecta por IMAP a Gmail con una contraseña de aplicación, busca
-    notificaciones BBVA de los últimos `dias` días y devuelve las que se
-    puedan parsear (hoy: solo 'Compra Exitosa') en el mismo formato
-    normalizado que parsear_archivo().
+    Conecta por IMAP a Gmail, busca correos de `remitente` (+ `criterio_extra`
+    opcional, ej. SUBJECT) de los últimos `dias` días, y para cada uno llama
+    extraer_fila(msg) -> DataFrame de 0+ filas, o None si el correo no se
+    pudo reconocer/parsear (se cuenta como 'no_reconocido').
     """
     desde = (datetime.now() - timedelta(days=dias)).strftime("%d-%b-%Y")
 
@@ -556,10 +560,8 @@ def buscar_correos_bbva(usuario: str, app_password: str, dias: int = 30) -> pd.D
     try:
         imap.login(usuario, app_password)
         imap.select("INBOX", readonly=True)
-        criterio_asunto = _criterio_asuntos(ASUNTOS_SOPORTADOS)
-        _, datos = imap.search(
-            None, f'(FROM "{REMITENTE_BBVA}" SINCE "{desde}" {criterio_asunto})'
-        )
+        query = f'(FROM "{remitente}" SINCE "{desde}"' + (f" {criterio_extra}" if criterio_extra else "") + ")"
+        _, datos = imap.search(None, query)
         ids = datos[0].split()
 
         partes = []
@@ -568,9 +570,9 @@ def buscar_correos_bbva(usuario: str, app_password: str, dias: int = 30) -> pd.D
             _, msg_datos = imap.fetch(msg_id, "(RFC822)")
             raw = msg_datos[0][1]
             msg = email.message_from_bytes(raw)
-            texto = _cuerpo_texto(msg)
-            if _es_email_bbva(texto):
-                partes.append(parsear_email_texto(texto))
+            fila = extraer_fila(msg)
+            if fila is not None and not fila.empty:
+                partes.append(fila)
             else:
                 no_reconocidos += 1
 
@@ -583,3 +585,96 @@ def buscar_correos_bbva(usuario: str, app_password: str, dias: int = 30) -> pd.D
             imap.logout()
         except Exception:
             pass
+
+
+def buscar_correos_bbva(usuario: str, app_password: str, dias: int = 30) -> pd.DataFrame:
+    """
+    Busca notificaciones BBVA de 'Compra Exitosa' y las parsea al mismo
+    formato normalizado que parsear_archivo().
+    """
+    def extraer(msg):
+        texto = _cuerpo_texto(msg)
+        return parsear_email_texto(texto) if _es_email_bbva(texto) else None
+
+    criterio_asunto = _criterio_asuntos(ASUNTOS_SOPORTADOS)
+    return _buscar_correos_imap(usuario, app_password, dias, REMITENTE_BBVA, criterio_asunto, extraer)
+
+
+def _extraer_adjunto_pdf(msg: email.message.Message) -> bytes | None:
+    for part in msg.walk():
+        nombre = (part.get_filename() or "").lower()
+        if part.get_content_disposition() == "attachment" and nombre.endswith(".pdf"):
+            return part.get_payload(decode=True)
+    return None
+
+
+# ─── Recibo de pago — citas presenciales Fundación Valle del Lili ───────────
+
+REMITENTE_FVL = "pagosonline@fvl.org.co"
+ASUNTO_FVL = "Recibo de pago cita presencial"
+_FVL_FECHA = re.compile(r"\d{2}/\d{2}/\d{4}")
+_FVL_VALOR = re.compile(r"Pago PSE\s+([\d.,]+)\s+COP")
+
+
+def parsear_recibo_fvl(pdf_bytes: bytes) -> pd.DataFrame | None:
+    with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+        texto = pdf.pages[0].extract_text() or ""
+    m_fecha = _FVL_FECHA.search(texto)
+    m_valor = _FVL_VALOR.search(texto)
+    if not (m_fecha and m_valor):
+        return None
+    fecha = datetime.strptime(m_fecha.group(0), "%d/%m/%Y").date()
+    monto = _parsear_monto_es("$" + m_valor.group(1))
+    return pd.DataFrame([{
+        "fecha": fecha,
+        "descripcion": "Fundación Valle del Lili - cita presencial",
+        "monto": monto,
+        "tipo": "gasto",
+        "categoria_sugerida": "💆 Cuidado Personal",
+        "subcategoria_sugerida": "Médicos / Salud",
+        "origen": "FVL Email PDF",
+    }])
+
+
+def buscar_correos_fvl(usuario: str, app_password: str, dias: int = 365) -> pd.DataFrame:
+    def extraer(msg):
+        pdf_bytes = _extraer_adjunto_pdf(msg)
+        return parsear_recibo_fvl(pdf_bytes) if pdf_bytes else None
+
+    return _buscar_correos_imap(usuario, app_password, dias, REMITENTE_FVL, f'SUBJECT "{ASUNTO_FVL}"', extraer)
+
+
+# ─── Recibo de cobro — Póliza de Salud SURA ──────────────────────────────────
+
+REMITENTE_SURA = "suracomunicaciones@sura.com.co"
+ASUNTO_SURA = "Recibo de cobro"
+_SURA_PERIODO = re.compile(r"Hasta:\s*(\d{4}-\d{2}-\d{2})")
+_SURA_TOTAL = re.compile(r"Total a pagar\s*\$?\s*([\d.,]+)")
+
+
+def parsear_recibo_sura(pdf_bytes: bytes) -> pd.DataFrame | None:
+    with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+        texto = pdf.pages[0].extract_text() or ""
+    m_periodo = _SURA_PERIODO.search(texto)
+    m_total = _SURA_TOTAL.search(texto)
+    if not (m_periodo and m_total):
+        return None
+    fecha = datetime.strptime(m_periodo.group(1), "%Y-%m-%d").date()
+    monto = _parsear_monto_es("$" + m_total.group(1))
+    return pd.DataFrame([{
+        "fecha": fecha,
+        "descripcion": "SURA - Póliza Salud (Plan Salud Evoluciona Familiar)",
+        "monto": monto,
+        "tipo": "gasto",
+        "categoria_sugerida": "🛡️ Seguro",
+        "subcategoria_sugerida": "Sura Póliza Salud",
+        "origen": "SURA Email PDF",
+    }])
+
+
+def buscar_correos_sura(usuario: str, app_password: str, dias: int = 365) -> pd.DataFrame:
+    def extraer(msg):
+        pdf_bytes = _extraer_adjunto_pdf(msg)
+        return parsear_recibo_sura(pdf_bytes) if pdf_bytes else None
+
+    return _buscar_correos_imap(usuario, app_password, dias, REMITENTE_SURA, f'SUBJECT "{ASUNTO_SURA}"', extraer)
