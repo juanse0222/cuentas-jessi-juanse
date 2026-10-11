@@ -53,17 +53,17 @@ st.markdown("""
 /* ── Tabs ────────────────────────────────────────────────── */
 .stTabs [data-baseweb="tab-list"] {
     gap: 3px;
-    background: rgba(255,255,255,0.04);
+    background: rgba(124,58,237,0.06);
     border-radius: 14px;
     padding: 4px;
-    border: 1px solid rgba(255,255,255,0.07);
+    border: 1px solid rgba(124,58,237,0.12);
 }
 .stTabs [data-baseweb="tab"] {
     font-size: 12px;
     font-weight: 600;
     padding: 7px 8px;
     border-radius: 10px;
-    color: rgba(255,255,255,0.55);
+    color: rgba(31,27,46,0.55);
     border: none !important;
     background: transparent !important;
 }
@@ -96,7 +96,7 @@ div[data-testid="metric-container"] [data-testid="stMetricValue"] {
     border-radius: 10px;
     font-weight: 600;
     font-size: 14px;
-    border: 1px solid rgba(255,255,255,0.12);
+    border: 1px solid rgba(31,27,46,0.14);
     transition: all 0.15s ease;
 }
 .stButton > button:hover {
@@ -119,7 +119,7 @@ div[data-testid="metric-container"] [data-testid="stMetricValue"] {
     border-radius: 99px;
 }
 .stProgress > div > div {
-    background: rgba(255,255,255,0.07);
+    background: rgba(31,27,46,0.08);
     border-radius: 99px;
 }
 
@@ -127,12 +127,12 @@ div[data-testid="metric-container"] [data-testid="stMetricValue"] {
 div[data-baseweb="select"] > div,
 div[data-baseweb="input"] > div {
     border-radius: 10px !important;
-    border-color: rgba(255,255,255,0.12) !important;
-    background: rgba(255,255,255,0.04) !important;
+    border-color: rgba(31,27,46,0.14) !important;
+    background: rgba(124,58,237,0.03) !important;
 }
 
 /* ── Divisores ───────────────────────────────────────────── */
-hr { opacity: 0.1; margin: 0.5rem 0; }
+hr { opacity: 0.18; margin: 0.5rem 0; }
 
 /* ── Info / alertas ──────────────────────────────────────── */
 div[data-testid="stAlert"] {
