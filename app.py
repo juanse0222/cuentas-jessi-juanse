@@ -11,6 +11,7 @@ from datetime import date
 
 import importador
 import asesor
+import extractor_ia
 import impuestos
 
 # ─── CONFIGURACIÓN DE PÁGINA ──────────────────────────────────────────────────
@@ -1176,6 +1177,11 @@ def pagina_importar():
         ("FVL", importador.buscar_correos_fvl),
         ("SURA", importador.buscar_correos_sura),
     ]
+    opciones_cat_ia = (
+        [f"{cat} → {sub}" for cat, subs in GASTOS.items() for sub in subs]
+        + [f"{cat} → {sub}" for cat, subs in INGRESOS.items() for sub in subs]
+    )
+    anthropic_key = st.secrets.get("ANTHROPIC_API_KEY")
 
     for nombre, clave_user, clave_pass in cuentas_correo:
         usuario_correo = st.secrets.get(clave_user)
@@ -1211,6 +1217,30 @@ def pagina_importar():
                 )
                 if resumen:
                     st.success("✅ " + " · ".join(resumen) + " (reconocidos/encontrados)")
+
+            st.divider()
+            st.caption(
+                "🧠 Búsqueda con IA — revisa remitentes que no tenemos mapeados con un "
+                "parser propio (ej. nómina, facturas nuevas). Más lenta, una llamada a "
+                "Claude por correo candidato."
+            )
+            if not anthropic_key:
+                st.info("No configurado todavía. Agrega `ANTHROPIC_API_KEY` en `.streamlit/secrets.toml`.")
+            elif st.button(f"🧠 Buscar con IA ({nombre})", use_container_width=True, key=f"buscar_ia_{nombre}"):
+                with st.spinner(f"Revisando correos candidatos de {nombre} con IA (puede tardar varios minutos)…"):
+                    try:
+                        df_ia = extractor_ia.buscar_correos_ia(
+                            usuario_correo, clave_correo, dias, anthropic_key, opciones_cat_ia, nombre,
+                        )
+                        existente = st.session_state["correo_dfs"].get(nombre, pd.DataFrame())
+                        combinado = pd.concat([existente, df_ia], ignore_index=True) if not df_ia.empty else existente
+                        st.session_state["correo_dfs"][nombre] = combinado
+                        st.success(
+                            f"✅ IA: {df_ia.attrs.get('total_mensajes', 0)} correos candidatos revisados · "
+                            f"{len(df_ia)} identificados como transacciones"
+                        )
+                    except Exception as e:
+                        st.error(f"❌ No pude completar la búsqueda con IA: {e}")
 
     archivos = st.file_uploader(
         "Archivos (.xlsx o .pdf)", type=["xlsx", "pdf"], accept_multiple_files=True,
