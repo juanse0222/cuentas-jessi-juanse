@@ -1174,6 +1174,7 @@ def pagina_importar():
     ]
     buscadores_correo = [
         ("BBVA", importador.buscar_correos_bbva),
+        ("Transferencias", importador.buscar_correos_transferencias),
         ("FVL", importador.buscar_correos_fvl),
         ("SURA", importador.buscar_correos_sura),
     ]

@@ -546,7 +546,12 @@ def _cuerpo_texto(msg: email.message.Message) -> str:
         return ""
     charset = msg.get_content_charset() or "utf-8"
     payload = msg.get_payload(decode=True)
-    return html.unescape(payload.decode(charset, errors="replace")) if payload else ""
+    if not payload:
+        return ""
+    texto = payload.decode(charset, errors="replace")
+    if msg.get_content_type() == "text/html":
+        texto = re.sub(r"<[^>]+>", " ", texto)
+    return html.unescape(texto)
 
 
 def _buscar_correos_imap(
@@ -683,3 +688,81 @@ def buscar_correos_sura(usuario: str, app_password: str, dias: int = 365) -> pd.
         return parsear_recibo_sura(pdf_bytes) if pdf_bytes else None
 
     return _buscar_correos_imap(usuario, app_password, dias, REMITENTE_SURA, f'SUBJECT "{ASUNTO_SURA}"', extraer)
+
+
+# ─── Transferencias entrantes (notificación BBVA de abono, ej. nómina CIDEIM/
+# UNISABANA que llega desde Bancolombia a la cuenta BBVA) ───────────────────
+# BBVA ha usado dos plantillas de correo para avisar un abono recibido; ambas
+# truncan el campo de referencia/detalle del ordenante a ~23-28 caracteres —
+# suficiente para calzar con REGLAS_CATEGORIA (CORPORACION CENTRO INTE →
+# CIDEIM, JUAN SEBA UNIVERSIDAD DE → UNISABANA) pero no el texto completo.
+# Los asuntos "Tu transferencia está en proceso/va en camino" son salientes
+# (dinero que Juanse envía) — se descartan verificando el cuerpo, no solo el
+# asunto, igual que _es_email_bbva valida antes de parsear.
+
+ASUNTOS_TRANSFERENCIA = ["Recibiste una transferencia", "TRANSFERENCIA INTERBANCARIA"]
+
+_TRANSF_ES_ENTRANTE = re.compile(r"recibiste una transferencia", re.IGNORECASE)
+_TRANSF_VALOR = re.compile(r"Valor:?\s*\$\s*([\d.,]+)")
+_TRANSF_FECHA_NUEVA = re.compile(r"Fecha y hora\s+(\d{2}/\d{2}/\d{4})")
+_TRANSF_FECHA_VIEJA = re.compile(r"el\s+(\d{4}-\d{2}-\d{2}),\s*a las")
+_TRANSF_REF_NUEVA = re.compile(r"Referencia\s+(.+?)\s+(?:Solo con|Con el f|Conocer m)")
+_TRANSF_REF_VIEJA = re.compile(r"Detalle:\s*(.+?)\s+Gracias por utilizar")
+_TRANSF_MONTO = re.compile(r"^([\d.,]+)[.,](\d{2})$")
+
+
+def _parsear_monto_transferencia(texto: str) -> float:
+    """BBVA no es consistente con el separador decimal entre estas notificaciones
+    — la mayoría usa coma ('3.850.000,00') pero al menos una plantilla antigua
+    usa punto para todo ('3.850.000.00'). Los últimos 2 dígitos después del
+    separador final siempre son la parte decimal; todo lo anterior son miles."""
+    limpio = texto.replace("$", "").strip()
+    m = _TRANSF_MONTO.match(limpio)
+    if not m:
+        raise ValueError(f"Formato de monto no reconocido: {texto!r}")
+    entero = re.sub(r"[.,]", "", m.group(1))
+    return float(f"{entero}.{m.group(2)}")
+
+
+def parsear_email_transferencia(texto: str) -> pd.DataFrame | None:
+    """Parsea una notificación BBVA de transferencia ENTRANTE (ingreso)."""
+    if not _TRANSF_ES_ENTRANTE.search(texto):
+        return None
+
+    m_valor = _TRANSF_VALOR.search(texto)
+    if not m_valor:
+        return None
+
+    m_fecha = _TRANSF_FECHA_NUEVA.search(texto)
+    if m_fecha:
+        fecha = datetime.strptime(m_fecha.group(1), "%d/%m/%Y").date()
+    else:
+        m_fecha = _TRANSF_FECHA_VIEJA.search(texto)
+        if not m_fecha:
+            return None
+        fecha = datetime.strptime(m_fecha.group(1), "%Y-%m-%d").date()
+
+    m_ref = _TRANSF_REF_NUEVA.search(texto) or _TRANSF_REF_VIEJA.search(texto)
+    referencia = m_ref.group(1).strip() if m_ref else ""
+
+    monto = _parsear_monto_transferencia(m_valor.group(1))
+    descripcion = f"TRANSFERENCIA RECIBIDA — {referencia}" if referencia else "TRANSFERENCIA RECIBIDA"
+    categoria, subcategoria = sugerir_categoria(referencia or descripcion, "ingreso")
+
+    return pd.DataFrame([{
+        "fecha": fecha,
+        "descripcion": descripcion,
+        "monto": monto,
+        "tipo": "ingreso",
+        "categoria_sugerida": categoria,
+        "subcategoria_sugerida": subcategoria,
+        "origen": "Email",
+    }])
+
+
+def buscar_correos_transferencias(usuario: str, app_password: str, dias: int = 90) -> pd.DataFrame:
+    def extraer(msg):
+        return parsear_email_transferencia(_cuerpo_texto(msg))
+
+    criterio_asunto = _criterio_asuntos(ASUNTOS_TRANSFERENCIA)
+    return _buscar_correos_imap(usuario, app_password, dias, REMITENTE_BBVA, criterio_asunto, extraer)
